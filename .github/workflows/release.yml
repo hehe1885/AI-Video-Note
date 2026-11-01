@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # 手动跑一次"只构建、不发版"：产物走 artifact，给人测包用。
+  # 补这个入口是因为 ci.yml 不出包、release.yml 又只在 tag 上出包，于是"发版前想给人
+  # 测包"只剩本地打这一条路——而本地打会把构建机 System32 的 VC++ 运行时原样收进 exe
+  # 并盖过用户自己那份（2026-10 群测两个转写引擎都 0xC0000005 就是这么来的）。
+  # 触发后 publish 这个 job 会被下面的 if 跳过，不会建 Release、不会刷 feed。
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+
+      - name: Verify tag and application version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: python
+        run: |
+          import os
+          import re
+          from pathlib import Path
+
+          source = Path("launcher.py").read_text(encoding="utf-8")
+          match = re.search(r'^VERSION = "([^"]+)"', source, re.MULTILINE)
+          if match is None:
+              raise SystemExit("Could not read VERSION from launcher.py")
+          version = match.group(1)
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Tag {tag!r} does not match launcher version {version!r}")
+
+      - name: Run tests
+        run: python -m pytest
+
+  build-windows:
+    name: Build Windows x64
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install build dependencies
+        run: python -m pip install -r backend/requirements.txt pyinstaller
+
+      - name: Set up bundled YouTube runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build portable executable
+        shell: pwsh
+        run: .\scripts\build_exe.ps1 -Python ((Get-Command python).Source) -SkipInstall
+
+      - name: Prepare verified installer compiler
+        shell: pwsh
+        run: |
+          $compilerSetup = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          $compilerRoot = Join-Path $env:RUNNER_TEMP 'inno-compiler'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $compilerSetup
+          if ((Get-FileHash $compilerSetup -Algorithm SHA256).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') {
+            throw 'Inno Setup compiler checksum mismatch'
+          }
+          if ((Get-AuthenticodeSignature $compilerSetup).Status -ne 'Valid') {
+            throw 'Inno Setup compiler signature is invalid'
+          }
+          $install = Start-Process -FilePath $compilerSetup -ArgumentList @('/PORTABLE=1','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/NOICONS',('/DIR="' + $compilerRoot + '"')) -WindowStyle Hidden -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Compiler preparation failed: $($install.ExitCode)" }
+          "INNO_COMPILER=$compilerRoot\ISCC.exe" >> $env:GITHUB_ENV
+
+      - name: Build Chinese and English installer
+        shell: pwsh
+        run: .\scripts\build_installer.ps1 -SkipBuild -ISCC $env:INNO_COMPILER
+
+      - name: Read version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path launcher.py -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Upload Windows asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist/AI-Video-Note-${{ env.VERSION }}-portable.exe
+            dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe
+            dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build-windows
+    # workflow_dispatch 的手动跑只到 build-windows 为止：没有 tag 就没有版本号，
+    # 让它跑下去会拿分支名去 gh release create
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release already exists; preserving its published notes and assets."
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* --notes-file .github/RELEASE_NOTES.md --title "AI Video Note $GITHUB_REF_NAME"
+          fi

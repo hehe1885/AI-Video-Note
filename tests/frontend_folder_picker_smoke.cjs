@@ -1,0 +1,33 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const front=path.join(__dirname,'../frontend');
+const page=fs.readFileSync(path.join(front,'index.html'),'utf8');
+const nodes=new Map([...page.matchAll(/id="([^"]+)"/g)].map(([,id])=>[id,{value:'',disabled:false,hidden:false,textContent:''}]));
+let saved=0,requests=0,next={directory:'D:/Notes',cancelled:false},failure=false;
+const sandbox={console,URL,setTimeout,clearTimeout,document:{getElementById:id=>nodes.get(id),addEventListener(){}},window:{addEventListener(){}},fetch:async(url,opts)=>{
+    requests++;assert.equal(url,'/api/note-directory/select');assert.equal(opts.method,'POST');
+    assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,true);
+    if(failure)throw new Error('offline');
+    return {ok:true,json:async()=>next};
+}};
+vm.createContext(sandbox);vm.runInContext(['api.js','tasks.js','settings.js','gpu-runtime.js','script.js','note-view.js'].map(name => fs.readFileSync(path.join(front,name),'utf8')).join('\n'),sandbox);
+const run=code=>vm.runInContext(code,sandbox);
+sandbox.saved=()=>saved++;
+run('persistGlobals=()=>saved();showToast=()=>{}');
+(async()=>{
+    assert.ok(page.includes('id="noteSaveDirectory" type="hidden"'));
+    await run('chooseNoteSaveDirectory()');
+    assert.equal(nodes.get('noteSaveDirectory').value,'D:/Notes');assert.equal(saved,1);
+    assert.equal(nodes.get('noteSaveDirectoryLabel').textContent,'D:/Notes');
+    assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,false);
+    next={cancelled:true,directory:''};await run('chooseNoteSaveDirectory()');
+    assert.equal(nodes.get('noteSaveDirectory').value,'D:/Notes');assert.equal(saved,1);
+    failure=true;await run('chooseNoteSaveDirectory()');
+    assert.equal(nodes.get('noteSaveDirectory').value,'D:/Notes');assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,false);
+    run('resetNoteSaveDirectory()');assert.equal(saved,2);assert.equal(nodes.get('noteSaveDirectory').value,'');
+    assert.equal(nodes.get('resetNoteDirectoryBtn').hidden,true);
+    run('isTaskActive=true');await run('chooseNoteSaveDirectory()');assert.equal(requests,3);
+    console.log('Native folder picker UI: selection, cancel, failure, reset and task guard passed');
+})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,0 +1,86 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.playwright-cli/
+.test-tmp/
+.tmp/
+.runtime/
+pytest-cache-files-*/
+server.stdout.log
+server.stderr.log
+.env
+workspace/
+*.part
+*.ytdl
+
+# 打包产物
+/build/
+/dist/
+*.spec
+Thumbs.db
+.DS_Store
+.idea/
+*.iml
+
+# 开发文档（本地保留，不入库）
+/DEVELOPMENT.md
+/dev-notes/
+# 构建产物（由 build_exe.ps1 从模板生成）
+/scripts/version_info.txt
+
+# 视频宣传脚本
+/promo/
+# 大文件 Release 附件（手动补传，不入库）
+/release-assets/*.zip
+# harmonyos开发
+/harmonyos/
+/scripts/read_bili_cookie.py
+/.hvigor/
+
+# 一次排查留下的路径清单转储（仓库内无引用，本地保留）
+/sopath.txt
+# ZCode 的索引排除清单（本机工具配置，勿提交）
+/.zcodeignore
+
+# Local implementation and portable runtime verification files
+/work/
+
+.venv-backup-*/
+
+# Personal configuration and credentials
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+cookies*.txt
+cookies*.json
+startup.json
+
+# Downloaded model weights and caches
+/models/
+/_model_cache/
+/.cache/
+*.onnx
+*.safetensors
+*.gguf
+*.ckpt
+ggml-*.bin
+model.bin
+pytorch_model*.bin
+
+# Generated data, logs, exports and local editor/agent settings
+/downloads/
+/exports/
+/notes/
+/transcripts/
+*.log
+*.sqlite
+*.sqlite3
+/.codex/
+/.claude/
+/.cursor/
+/.vscode/

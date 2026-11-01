@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- style-src 放开 inline style：KaTeX 产物的上下标/矩阵定位全靠 inline style 属性
+         （模型内容仍被 DOMPurify 剥掉 style，放行的只有本机生成的 KaTeX 输出）。
+         注意 hash 与 'unsafe-inline' 并存时后者会被忽略，必须整个替换。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+    <title>AI Video Note - 本地视频笔记</title>
+    <link rel="icon" href="/favicon.ico?v=ai-video-note-1.0.0">
+    <script src="theme-bootstrap.js?v=20261011-2"></script>
+    <link rel="stylesheet" href="style.css?v=20261101-2">
+    <link rel="stylesheet" href="vendor/katex/katex.min.css">
+    <script src="vendor/marked-18.0.9.umd.js"></script>
+    <script src="vendor/dompurify-3.4.13.min.js"></script>
+    <script src="vendor/katex/katex.min.js"></script>
+    <script src="vendor/katex/mhchem.min.js"></script>
+    <script src="vendor/html2canvas-1.4.1.min.js"></script>
+</head>
+<body>
+<div class="app-shell">
+    <aside id="settingsSidebar" class="sidebar" aria-label="处理配置">
+        <div class="brand">
+            <img class="brand-mark" src="/icon.png?v=ai-video-note-1.0.0" alt="" aria-hidden="true" width="40" height="40">
+            <div>
+                <h1>AI Video Note <span id="appVersion" class="app-version">v1.0.0</span></h1>
+                <p>个人视频及音频笔记工具</p>
+            </div>
+        </div>
+
+        <div id="mcpStatusChip" class="mcp-chip" role="status" hidden>
+            <span class="mcp-chip-dot" aria-hidden="true"></span>
+            <span>本机服务在跑 · 可让 AI 客户端直接用</span>
+        </div>
+
+
+
+            <div id="preferencesStorageNotice" class="task-advisory" role="status" hidden>
+                <p id="preferencesStorageMessage"></p>
+                <button id="retryPreferencesBtn" class="button ghost compact-button" type="button" hidden>重试保存设置</button>
+                <button id="reloadPreferencesBtn" class="button ghost compact-button" type="button">重新读取设置</button>
+            </div>
+
+        <details id="aiAccessSettings" class="config-section settings-section" aria-labelledby="aiAccessTitle">
+            <summary><h2 id="aiAccessTitle">AI接入设置</h2></summary>
+            <div class="config-body">
+            <div class="field" id="generationModeField">
+                <label for="generationMode">AI 接入方式</label>
+                <select id="generationMode">
+                    <option value="api">模型 API</option>
+                    <option value="agent">通过 agent 生成（无需 API Key）</option>
+                </select>
+                <small class="sidebar-note">agent 模式使用客户端账号额度，无需在本软件填写 API Key。</small>
+
+            </div>
+            <div id="agentExecutionSettings" hidden>
+        <div id="agentAccessStatus" class="agent-access-status" role="status" aria-live="polite">
+            <strong>Agent 接入状态</strong>
+            <p id="agentConnectionState" data-no-i18n>正在检测 Agent 调用…</p>
+        </div>
+                <label class="field" for="agentExecution">agent 处理方式
+                    <select id="agentExecution">
+                        <option value="manual">Agent 聊天处理</option>
+                        <option value="auto">网页端处理</option>
+                    </select>
+                </label>
+                <small id="agentExecutionHint" class="agent-execution-hint sidebar-note">在 Agent 聊天中发送视频链接；接入方法见下方「Agent 聊天接入」。</small>
+                <div id="agentCliSettings" hidden>
+                    <label class="field" for="agentProvider">自动处理的 agent
+                        <select id="agentProvider"><option value="codex">Codex</option><option value="claude">Claude Code（命令行版）</option><option value="antigravity">Antigravity CLI</option><option value="qwen">Qwen Code</option><option value="custom">其他 agent（自定义命令行）</option></select>
+                    </label>
+                    <div id="agentModelSettings">
+                        <label class="field"><span>模型名称</span><select id="agentModel"><option value="">客户端默认模型</option><option value="__custom__">手动填写模型 ID</option></select></label>
+                        <label id="agentCustomModelField" class="field" hidden><span>模型 ID</span><input id="agentCustomModel" maxlength="128" placeholder="填写当前账号可用的模型 ID" autocomplete="off"></label>
+                        <label id="agentEffortField" class="field"><span>推理强度（可选）</span><select id="agentReasoningEffort"><option value="default">客户端默认</option></select></label>
+                        <small id="agentModelHint" class="sidebar-note">模型名称从所选客户端读取；也可手动填写模型 ID。任务区显示客户端报告的模型。</small>
+                    </div>
+
+                    <label id="agentCommandField" class="field" hidden>命令参数列表（JSON）
+                        <textarea id="agentCommand" rows="3" placeholder='["my-agent", "--print"]'></textarea>
+                        <small class="sidebar-note">程序通过标准输入发送提示词，读取标准输出正文；可用 {prompt_file}、{output_file}、{workspace}、{images_file}、{model}、{metadata_file}。请使用已登录的客户端，不在命令中填写 API Key。自定义 agent 的图片支持取决于该客户端。</small>
+                    </label>
+                    <button id="checkAgentRuntimeBtn" class="button ghost compact-button" type="button">检测本机 agent</button>
+                    <p id="agentRuntimeStatus" class="mcp-note sidebar-note" role="status"></p>
+                </div>
+            </div>
+            <details id="agentChatConnectionSection" class="template-tools" hidden>
+                <summary>Agent 聊天接入（MCP / Skill）</summary>
+                <div class="template-body">
+                <p class="mcp-note sidebar-note">MCP 和 Skill 是让同一个 Agent 调用本软件的两种方式，任选一种即可；也可同时配置，不互斥。同一任务使用一种方式提交。</p>
+                <p class="mcp-note sidebar-note">客户端已连接 MCP，可直接使用；希望通过技能包调用并按需启动软件，可选择 Skill。这里的接入配置与模型 API 配置独立。</p>
+        <details id="mcpSection" class="agent-connection-option">
+            <summary>MCP：在客户端添加工具连接</summary>
+            <p id="mcpConnectionState" class="mcp-note sidebar-note" role="status" aria-live="polite">未检测到客户端连接</p>
+            <label class="field" for="mcpTransport">
+                <span>MCP 连接方式</span>
+                <select id="mcpTransport">
+                    <option value="http">Streamable HTTP（推荐）</option>
+                    <option value="sse">SSE（兼容旧客户端）</option>
+                </select>
+            </label>
+            <p class="section-note sidebar-note">本程序内置 MCP 服务器：在 Claude Code、Codex 这类客户端里填下面的地址，就能让你的 agent 直接把视频转成字幕稿或笔记。任务仍在这台机器上跑，请先让本程序开着。</p>
+            <div class="mcp-address-label">MCP 地址</div>
+            <div class="mcp-row">
+                <code id="mcpSseUrl">http://127.0.0.1:8765/mcp/http</code>
+                <button id="copyMcpUrlBtn" class="button ghost compact-button" type="button">复制地址</button>
+            </div>
+            <div class="mcp-row">
+                <button id="copyMcpConfigBtn" class="button ghost compact-button" type="button">复制 JSON 配置</button>
+            </div>
+            <p id="mcpUnavailable" class="mcp-note sidebar-note" hidden>这台机器没装 <code>mcp</code> 依赖，上面的地址暂时连不通（网页端和任务本身不受影响）。装齐 <code>backend/requirements.txt</code> 里的依赖后重启即可。</p>
+        </details>
+                <details id="skillSection" class="agent-connection-option">
+                    <summary>Skill：导出技能包，按需启动软件</summary>
+                    <p class="mcp-note sidebar-note">将 Skill 安装到支持技能的 agent，即可在聊天中发送视频链接，调用本软件生成字幕或笔记。无需配置 MCP。</p>
+                    <button id="exportSkillBtn" class="button ghost compact-button" type="button">导出 Skill…</button>
+                    <p id="skillExportStatus" class="mcp-note sidebar-note" role="status" aria-live="polite"></p>
+                    <ol class="mcp-note sidebar-note">
+                        <li>选择保存文件夹，导出后解压 ZIP。</li>
+                        <li>在 agent 中导入 AI-Video-Note 文件夹，或将整个文件夹复制到该客户端指定的 skills 目录；不要只复制 SKILL.md。</li>
+                        <li>刷新技能列表或重启 agent，确认技能已加载。</li>
+                        <li>在 agent 聊天中要求使用 AI-Video-Note 处理视频链接；Skill 会按需启动本软件后台服务。</li>
+                    </ol>
+                    <small class="sidebar-note">保留包内 startup.json；软件移动后请重新导出 Skill。agent 需要 Python，以及启动本机程序和访问本机服务的权限。任务结束后可从托盘退出软件。</small>
+                </details>
+                </div>
+            </details>
+            <div id="apiModelSettings">
+            <div class="field">
+                <span>模型档案</span>
+                <span class="profile-row">
+                    <select id="llmProfile"></select>
+                    <button id="renameProfileBtn" class="button ghost compact-button" type="button" hidden>重命名</button>
+                </span>
+                <small class="sidebar-note">每个档案各自记住模型与地址；自定义接口可保存多个。</small>
+            </div>
+            <label class="field">
+                <span>模型</span>
+                <select id="llmModel"></select>
+            </label>
+            <label id="customModelNameField" class="field" hidden>
+                <span>手动模型 ID</span>
+                <input type="text" id="customModelName" placeholder="provider-model-id">
+            </label>
+            </div>
+
+            <label class="field" id="reasoningEffortField">
+                <span>推理强度</span>
+                <select id="reasoningEffort">
+                    <option value="auto" selected>自动（推荐）</option>
+                    <option value="off">极速（关闭思考）</option>
+                    <option value="high">质量（开启思考）</option>
+                </select>
+                <small class="sidebar-note">极速出稿快但小节偏碎；质量更慢（25 分钟视频约 3~4 分钟）但脉络更像笔记。</small>
+            </label>
+            <div id="apiConnectionSettings">
+            <label class="field">
+                <span>API Key</span>
+                <input type="password" id="apiKey" autocomplete="off" placeholder="粘贴后即可使用；留空则复用本机已保存的 Key">
+                <span id="keyState" class="key-chip" role="status" aria-live="polite"></span>
+                <small class="sidebar-note">「保存到本机」只写入本机 workspace 的加密档案（绝不进浏览器存储），且只在目标接口地址一致时才会被复用。</small>
+            </label>
+            <div class="llm-test-row">
+                <button id="llmTestBtn" class="button secondary" type="button">测试连接</button>
+                <button id="diagBtn" class="button ghost compact-button" type="button">本机自检</button>
+                <button id="saveKeyBtn" class="button ghost compact-button" type="button" disabled>保存到本机</button>
+                <button id="clearKeyBtn" class="button ghost compact-button" type="button" hidden>清除已存 Key</button>
+            </div>
+            <span id="llmTestStatus" class="llm-test-status" role="status" aria-live="polite"></span>
+            <div id="diagReport" class="diag-report" hidden></div>
+
+            <div id="customApiConfig" class="custom-config" hidden>
+                <label id="customBaseUrlField" class="field" hidden>
+                    <span>API Base URL</span>
+                    <input type="url" id="customBaseUrl" placeholder="https://api.example.com/v1">
+                </label>
+                <div class="profile-row">
+                    <input type="text" id="customProfileLabel" placeholder="档案名称，如 公司代理" autocomplete="off">
+                    <button id="customProfileAddBtn" class="button ghost compact-button" type="button">另存为新档案</button>
+                </div>
+                <div class="profile-actions">
+                    <button id="customProfileDeleteBtn" class="button ghost compact-button" type="button">删除当前档案</button>
+                </div>
+            </div>
+            </div>
+            </div>
+        </details>
+
+        <div id="sidebarNoteSettings" class="mode-note-region">
+        <div class="mode-note-inner">
+        <details id="noteGenerationSettings" class="config-section settings-section" aria-labelledby="modelTitle">
+            <summary><h2 id="modelTitle">笔记生成设置</h2></summary>
+            <div class="config-body">
+            <details class="template-tools">
+                <summary>生成配置模板</summary><div class="template-body">
+                <label class="field"><span>选择模板</span><select id="noteTemplate"><option value="">请选择模板</option></select></label>
+                <label class="field"><span>模板名称</span><input id="templateName" maxlength="60" placeholder="例如：课程学习、会议记录"></label>
+                <div class="template-actions">
+                    <button id="applyTemplateBtn" class="button ghost compact-button" type="button">应用</button>
+                    <button id="saveTemplateBtn" class="button ghost compact-button" type="button">另存模板</button>
+                    <button id="updateTemplateBtn" class="button ghost compact-button" type="button">更新模板</button>
+                    <button id="renameTemplateBtn" class="button ghost compact-button" type="button">重命名</button>
+                    <button id="deleteTemplateBtn" class="button ghost compact-button" type="button">删除</button>
+                </div>
+                <label class="check-field template-default"><input id="defaultTemplate" type="checkbox"><span>打开网页时默认应用此模板</span></label>
+                <small class="sidebar-note">模板保存在程序旁的 workspace，包含生成参数、模型选择与自定义提示词，不保存 API Key 和登录凭据。</small></div>
+            </details>
+
+            <label class="field" id="summaryStyleField">
+                <span>笔记风格</span>
+                <select id="summaryStyle" aria-describedby="summaryStyleHint">
+                    <optgroup label="通用">
+                        <option value="faithful" selected>详细笔记（保留要点与细节，推荐）</option>
+                        <option value="concise">重点摘要（快速了解主要内容）</option>
+                    </optgroup>
+                    <optgroup label="按用途">
+
+                        <option value="learning">学习讲义（概念解释、案例与复习题）</option>
+                        <option value="tutorial">步骤教程（操作过程、参数与注意事项）</option>
+                        <option value="meeting">会议纪要（议题、结论与待办）</option>
+                    </optgroup>
+                </select>
+                <small id="summaryStyleHint" class="sidebar-note">风格控制正文组织方式；所有风格均支持 LaTeX 公式渲染。图片由配图选项独立控制。</small>
+            </label>
+
+            <label class="field" id="noteLanguageField">
+                <span>笔记语言</span>
+                <select id="noteLanguage"><option value="zh-CN">中文</option><option value="en">英文</option></select>
+            </label>
+            <label class="field" id="timelineModeField">
+                <span>时间线位置</span>
+                <select id="timelineMode">
+                    <option value="none">不添加时间线</option>
+                    <option value="heading">标题旁边</option>
+                    <option value="paragraph_start">段首</option>
+                    <option value="paragraph_end">段尾</option>
+                    <option value="all" selected>全部位置（标题旁、段首和段尾）</option>
+                </select>
+                <small class="sidebar-note">只影响笔记；导出的字幕保留原始时间轴。</small>
+            </label>
+            <label class="field" id="aiCommentaryField">
+                <span>AI 点评位置</span>
+                <select id="aiCommentary">
+                    <option value="none" selected>不添加 AI 点评</option>
+                    <option value="start">笔记开头</option>
+                    <option value="end">笔记末尾</option>
+                </select>
+                <small class="sidebar-note">点评独立成节，与原内容区分；可能增加生成时间。</small>
+            </label>
+            <label class="field" id="sourceLinkField">
+                <span>视频链接位置</span>
+                <select id="sourceLinkPosition"><option value="none">不添加视频链接</option><option value="start">笔记开头</option><option value="end" selected>笔记末尾</option></select>
+            </label>
+            <label class="field" id="textDetailField">
+                <span>文字详略</span>
+                <select id="textDetail"><option value="brief">简略（保留要点与必要步骤）</option><option value="standard">标准（必要解释与代表性案例）</option><option value="detailed" selected>详细（展开解释、案例与操作细节）</option></select>
+                <small class="sidebar-note">适用于所有笔记风格，与图片数量独立。</small>
+            </label>
+
+        </div>
+        </details>
+
+        </div>
+        </div>
+        <details class="config-section settings-section" aria-labelledby="recognitionTitle">
+            <summary><h2 id="recognitionTitle">识别设置</h2></summary>
+            <div class="config-body">
+            <label class="field" id="processingModeField">
+                <span>字幕处理方式</span>
+                <select id="processingMode" aria-describedby="processingModeHint">
+                    <option value="reuse">使用已有字幕</option>
+                    <option value="restart" selected>重新识别字幕</option>
+                </select>
+                <small id="processingModeHint" class="sidebar-note">若粘贴的链接已有历史字幕，可直接使用；选择“重新识别字幕”则重新获取字幕，无字幕时进行语音识别。</small>
+            </label>
+            <label class="field">
+                <span>语音识别模型设置</span>
+                <select id="whisperModel">
+                    <optgroup label="中文专用">
+                        <option value="belle-turbo-zh">belle-turbo-zh（中文优化）</option>
+                    </optgroup>
+                    <optgroup label="多语言">
+                        <option value="base" selected>base（体积小）</option>
+                        <option value="small">small（体积适中）</option>
+                        <option value="medium">medium（中型模型）</option>
+                        <option value="turbo">turbo（大型模型加速版）</option>
+                        <option value="large-v3">large-v3（大型模型完整版）</option>
+                    </optgroup>
+                </select>
+            </label>
+            <div id="modelStatusNotice" hidden>
+                <small id="modelStatusHint" role="status" class="sidebar-note"></small>
+                <button id="retryModelStatusBtn" class="button ghost compact-button" type="button">重新读取</button>
+            </div>
+            <p class="field-hint sidebar-note">多语言模型支持中文、英语等多种语言，自动逐段检测语言并保留原文。</p>
+            <div class="model-storage-actions">
+                <button id="downloadModelBtn" class="button secondary compact-button" type="button">下载所选模型</button>
+                <button id="manualModelBtn" class="button secondary compact-button" type="button">手动导入模型</button>
+                <button id="pauseModelDownloadBtn" class="button ghost compact-button" type="button" hidden>暂停下载</button>
+                <button id="resumeModelDownloadBtn" class="button ghost compact-button" type="button" hidden>继续 / 重试下载</button>
+            </div>
+            <small id="modelDownloadProgress" class="field-hint sidebar-note" role="status"></small>
+            <details class="model-storage-panel">
+                <summary>环境检查与修复</summary>
+                <p class="field-hint sidebar-note">换电脑后可检查所需组件，缺失时一键补装。显卡驱动需要在 Windows 中安装。</p>
+                <div class="model-storage-actions">
+                    <button id="checkEnvironmentBtn" class="button ghost compact-button" type="button">检查环境</button>
+                    <button id="repairEnvironmentBtn" class="button ghost compact-button" type="button">一键修复依赖</button>
+                </div>
+                <pre id="environmentResult" class="field-hint sidebar-note" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+            </details>
+            <details class="model-storage-panel">
+                <summary>模型位置与删除</summary>
+                <p class="model-path sidebar-note">当前下载位置：<span id="modelDirectoryCurrent" role="status">正在读取…</span></p>
+                <p class="model-path sidebar-note">默认位置：<span id="modelDirectoryDefault">正在读取…</span></p>
+                <label class="field">
+                    <span>下载文件夹（完整路径）</span>
+                    <input id="modelDirectory" type="text" placeholder="留空使用默认位置" autocomplete="off">
+                    <small class="sidebar-note">保存后立即生效，并在重启后保留。旧模型保留在原位置，不自动搬移。</small>
+                </label>
+                <div class="model-storage-actions">
+                    <button id="saveModelDirectoryBtn" class="button ghost compact-button" type="button">保存位置</button>
+                    <button id="resetModelDirectoryBtn" class="button ghost compact-button" type="button">恢复默认</button>
+                </div>
+                <p id="selectedModelPaths" class="model-path sidebar-note"></p>
+                <button id="deleteModelBtn" class="button ghost compact-button" type="button" disabled>删除所选模型</button>
+                <small class="sidebar-note">仅删除当前下载文件夹内的所选模型（包括手动导入文件和未完成下载）。其他位置的共享缓存不受影响。</small>
+            </details>
+            <label class="check-field">
+                <input type="checkbox" id="useGpu">
+                <span>启用显卡加速（语音识别）</span>
+            </label>
+            <div class="field">
+                <small id="gpuDetected" class="gpu-detected" role="status" aria-live="polite" hidden></small>
+                <small class="sidebar-note">自动选择显卡与加速方式，不可用时回退 CPU。部分模型仅支持 CPU。</small>
+                <small class="gpu-runtime-label">显卡驱动安装</small>
+                <div class="model-storage-actions gpu-runtime-actions">
+                    <button id="gpuRuntimeQuickBtn" class="button ghost compact-button" type="button">一键安装</button>
+                    <button id="gpuRuntimeManualBtn" class="button ghost compact-button" type="button">手动安装</button>
+                </div>
+            </div>
+            <div id="sidebarScreenshotSettings" class="mode-note-region"><div class="mode-note-inner"><div class="mode-note-body">
+            <label class="field" id="screenshotDensityField">
+                <span>AI 配图</span>
+                <select id="screenshotDensity">
+                    <option value="none">不贴图片</option>
+                    <option value="few">较少</option>
+                    <option value="medium">中等</option>
+                    <option value="many">较多</option>
+                </select>
+                <small class="sidebar-note">按字幕选取截图，档位控制疏密；视觉核对可减少配图偏差。</small>
+            </label>
+            <div id="visionScreenshotSettings">
+                <label class="check-field"><input id="visionScreenshots" type="checkbox" disabled><span>视觉核对候选截图（可选）</span></label>
+                <small id="visionCapabilityHint" role="status" class="sidebar-note">选择 AI 配图后检测所选模型的视觉能力</small>
+                <button id="retryVisionCheckBtn" class="button ghost compact-button" type="button">重新检测视觉能力</button>
+                <small class="sidebar-note">核对时会向模型发送图片，可能增加耗时与费用。定时截图不受影响。</small>
+            </div>
+            <div id="autoCropScreenshotSettings">
+                <label class="check-field"><input id="autoCropScreenshots" type="checkbox" disabled><span>允许 AI 选图自动裁剪区域</span></label>
+                <small class="sidebar-note">需开启视觉核对。保守裁剪，宁可不裁；保留原图，复核不通过就用全图。可能增加耗时与费用。</small>
+            </div>
+            <div id="timedScreenshotSettings">
+                <label class="check-field">
+                    <input id="timedScreenshots" type="checkbox">
+                    <span>定时截图</span>
+                </label>
+                <label class="field" id="screenshotIntervalField" hidden>
+                    <span>截图间隔（秒）</span>
+                    <input id="screenshotInterval" type="number" min="1" max="86400" step="1" value="10">
+                    <small class="sidebar-note">从第 0 秒开始，每隔指定秒数截图并插入笔记。启用后替代 AI 选点；间隔越短，图片和存储占用越多。</small>
+                </label>
+            </div>
+            <div id="screenshotVideoSettings" hidden>
+                <label class="field">
+                    <span>视频编码</span>
+                    <select id="videoEncoding">
+                        <option value="compatibility">兼容性优先（H.264）</option>
+                        <option value="size" disabled>体积优先（优先 H.265）</option>
+                    </select>
+                    <small class="sidebar-note">体积优先需要可用的 HEVC 硬件编解码；平台没有 H.265 时使用 H.264，压缩保持对应编码。暂不支持 AV1。</small>
+                    <small id="videoCodecStatus" class="sidebar-note">正在检测 HEVC 硬件编解码能力…</small>
+                    <button id="videoCodecRetry" type="button" class="button secondary compact-button">重新检测编码能力</button>
+                </label>
+                <label class="field">
+                    <span>截图视频清晰度</span>
+                    <select id="videoResolution">
+                        <option value="360">360p</option>
+                        <option value="480">480p</option>
+                        <option value="720" selected>720p（默认）</option>
+                        <option value="1080">1080p</option>
+                    </select>
+                    <small class="sidebar-note">默认下载 720p；视频不足 720p 时下载可用的最高清晰度。手动选择时，以所选清晰度为上限，最高 1080p。</small>
+                </label>
+                <label class="field">
+                    <span>视频下载位置（可选）</span>
+                    <input id="videoDownloadDirectory" type="text" placeholder="留空使用默认位置，或填写文件夹绝对路径">
+                    <small id="videoDownloadDefault" class="sidebar-note">正在读取默认位置…</small>
+                    <small class="sidebar-note">视频按链接和清晰度复用；删除历史任务时，会同时删除关联的下载视频。视频正在被其他任务使用时，请先等待其完成。</small>
+                </label>
+            </div>
+            </div></div></div>
+        </div>
+        </details>
+
+        <details id="credentialsSection" class="config-section collapsible-section">
+            <summary><span class="settings-title">B 站访问凭据（可选）</span></summary>
+            <div class="config-body">
+            <p class="section-note sidebar-note">登录后自动保存到本机，退出软件后仍可使用；登录失效时需重新扫码。未登录时，B 站视频通常最高只能下载 480p。</p>
+            <div class="bili-login-row">
+                <button id="biliLoginBtn" class="button secondary compact-button" type="button">扫码登录导入</button>
+                <button id="biliLogoutBtn" class="button secondary compact-button" type="button" hidden>退出登录</button>
+                <button id="biliLoginCancelBtn" class="button secondary compact-button" type="button" hidden>取消</button>
+            </div>
+            <div id="biliQrPanel" class="bili-qr-panel" hidden>
+                <img id="biliQrImage" alt="B 站登录二维码" width="220" height="220">
+                <small class="sidebar-note">使用哔哩哔哩手机客户端扫码，并在手机上确认登录。二维码过期后可重新获取。</small>
+            </div>
+            <p id="biliLoginStatus" class="bili-login-status" role="status" aria-live="polite"></p>
+            <details class="credential-manual">
+            <summary>手动填写凭据（可选）</summary>
+            <label class="field">
+                <span>SESSDATA</span>
+                <input type="password" id="sessdata" autocomplete="off">
+            </label>
+            <label class="field">
+                <span>bili_jct</span>
+                <input type="password" id="biliJct" autocomplete="off">
+            </label>
+            <label class="field">
+                <span>buvid3</span>
+                <input type="password" id="buvid3" autocomplete="off">
+            </label>
+            <button id="biliSaveLoginBtn" class="button secondary compact-button" type="button">保存手动填写的凭据</button>
+            </details>
+        </div>
+        </details>
+
+
+
+        <details id="softwareSettingsSection" class="config-section collapsible-section" aria-labelledby="softwareSettingsTitle">
+            <summary><span id="softwareSettingsTitle" class="settings-title">软件设置</span></summary>
+            <div class="config-body">
+                <label class="field" for="fontSize"><span>界面字号</span>
+                    <select id="fontSize">
+                        <option value="compact">小（92%）</option>
+                        <option value="standard" selected>标准（100%）</option>
+                        <option value="comfortable">偏大（107.5%）</option>
+                        <option value="large">大（115%）</option>
+                        <option value="maximum">最大（125%）</option>
+                    </select>
+                </label>
+                <div class="field">
+                    <div class="software-settings-row">
+                        <label for="logRetentionDays">日志保留天数</label>
+                        <button id="viewLogsBtn" class="button ghost compact-button software-log-button" type="button" title="查看日志" aria-label="查看日志">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
+                        </button>
+                    </div>
+                    <input id="logRetentionDays" type="number" min="1" max="365" step="1" value="3" disabled>
+                    <small class="sidebar-note">默认 3 天，修改后自动保存。仅清理运行日志，不影响任务历史。</small>
+                </div>
+                <small id="logRetentionStatus" role="status" aria-live="polite" class="sidebar-note"></small>
+                <small id="viewLogsStatus" role="status" aria-live="polite" class="sidebar-note"></small>
+                <div class="field">
+                    <label class="check-field"><input id="autostartEnabled" type="checkbox" disabled><span>开机自启动</span></label>
+                    <small class="sidebar-note">开机后仅在后台运行，不自动打开网页。</small>
+                    <small id="autostartStatus" role="status" aria-live="polite" class="sidebar-note"></small>
+                </div>
+                <div class="field">
+                    <button id="storageManageBtn" class="button ghost" type="button">存储与缓存…</button>
+                    <small class="sidebar-note">查看素材大小，预览并清理可重新下载的音视频缓存。</small>
+                </div>
+                <div class="settings-backup-actions">
+                    <button id="exportSettingsBtn" class="button ghost compact-button" type="button">导出设置</button>
+                    <button id="restoreSettingsBtn" class="button ghost compact-button" type="button">导入设置</button>
+                </div>
+                <input id="settingsBackupFile" type="file" accept=".json,application/json" hidden>
+                <small class="sidebar-note">备份需手动导出保存；导入时选择设置 JSON 文件，选好后立即导入并刷新。</small>
+                <small class="settings-backup-help sidebar-note">包含生成参数、模型档案、模板和界面偏好；不包含已保存的 API Key、登录凭据、模型文件或历史任务。</small>
+                <small id="settingsBackupStatus" role="status" aria-live="polite" class="sidebar-note"></small>
+                <div class="sidebar-actions">
+                    <button id="resetConfigBtn" class="button ghost" type="button">恢复默认</button>
+                    <p class="sidebar-note">模型选择、识别参数和主题改动即保存到 workspace；API Key 不包含在设置导出中。</p>
+                </div>
+            </div>
+        </details>
+    </aside>
+
+    <main class="workspace">
+        <header class="workspace-header">
+            <div>
+                <p class="eyebrow">LOCAL WORKSPACE</p>
+                <h2>视频转笔记</h2>
+                <p>提交链接、本地视频或本地音频，任务会先尝试字幕，缺失时再转写音频。</p>
+            </div>
+            <div class="header-tools">
+            <div class="header-actions">
+                <button id="languageToggle" class="button ghost compact-button" type="button" data-no-i18n title="Switch to English" aria-label="Switch to English">English</button>
+                <span id="serviceState" class="service-state" title="本程序在自己电脑上开的一个地址，网页界面靠它跟程序说话。跟模型的 API Key 没有关系，这里不用填任何东西。">本机服务</span>
+                <div id="themeControl" class="theme-control" role="group" aria-label="界面主题">
+                    <button type="button" data-theme-option="light" aria-pressed="false" title="亮色主题">
+                        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/></svg>
+                        <span>亮色</span>
+                    </button>
+                    <button type="button" data-theme-option="system" aria-pressed="false" title="跟随系统外观">
+                        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5"/><path d="M5.5 14h5"/></svg>
+                        <span>自动</span>
+                    </button>
+                    <button type="button" data-theme-option="dark" aria-pressed="false" title="暗色主题">
+                        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M13 9.5A5.8 5.8 0 0 1 6.5 3a5.8 5.8 0 1 0 6.5 6.5Z"/></svg>
+                        <span>暗色</span>
+                    </button>
+                </div>
+            </div>
+            </div>
+        </header>
+
+        <section class="source-panel" aria-labelledby="sourceTitle">
+            <div class="section-heading">
+                <div>
+                    <h3 id="sourceTitle">选择视频或音频来源</h3>
+                </div>
+                <div class="heading-controls">
+                    <fieldset class="mode-control">
+                        <legend class="sr-only">输出类型</legend>
+                        <label>
+                            <input type="radio" name="outputMode" value="note" checked>
+                            <span>生成笔记</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="outputMode" value="transcript">
+                            <span>仅转录字幕</span>
+                        </label>
+                    </fieldset>
+                </div>
+            </div>
+
+            <div id="sourceModeContent" class="source-mode-content">
+            <div class="source-mode-inner">
+            <div id="sourceNoteSettings" class="mode-note-region">
+            <div class="mode-note-inner">
+            <div class="mode-note-body">
+            <div class="note-settings-row">
+            <div id="noteFormatSettings" class="note-format-controls">
+                    <label for="formatSelect">笔记格式（生成前选择）</label>
+                    <select id="formatSelect">
+                        <option value="markdown">Markdown 文件</option>
+                        <option value="obsidian">Obsidian 笔记</option>
+                        <option value="docx">Word 笔记（.docx）</option>
+                        <option value="pdf">PDF 文档（.pdf）</option>
+                        <option value="enex">印象笔记 / Evernote（.enex）</option>
+                        <option value="png">PNG 图片</option>
+                        <option value="html">HTML</option>
+                        <option value="json">JSON</option>
+                        <option value="txt">纯文本</option>
+                    </select>
+                    <label class="sr-only" for="imageLayoutSelect">图片版式</label>
+                    <select id="imageLayoutSelect" hidden>
+                        <option value="long">长图</option>
+                        <option value="portrait">3:4 分页</option>
+                    </select>
+            </div>
+            </div>
+            <details class="field prompt-disclosure" id="customPromptField">
+                <summary>自定义提示词（可选）</summary>
+                <label class="sr-only" for="customPrompt">自定义提示词（可选）</label>
+                <textarea id="customPrompt" rows="5" maxlength="8000" placeholder="例如：按学习笔记组织，重点解释原理，添加复习问题。"></textarea>
+                <small>生成前填写，适用于所有笔记风格。留空使用默认要求；内容只用于本次生成。</small>
+            </details>
+            <div class="field note-save-settings" id="noteSaveSettings" role="group" aria-labelledby="noteSaveTitle" title="未选择文件夹时保存到默认导出目录；指定位置后不重复导出到默认目录。历史记录仍保留笔记、字幕和截图，用于回看与重新生成。">
+                <span id="noteSaveTitle" class="note-save-title">笔记保存位置（可选）</span>
+                <input id="noteSaveDirectory" type="hidden">
+                <output id="noteSaveDirectoryLabel" class="note-directory-path" aria-live="polite">使用默认保存位置</output>
+                <div class="note-directory-actions">
+                    <button id="chooseNoteDirectoryBtn" class="button secondary compact-button" type="button">选择保存文件夹</button>
+                    <button id="resetNoteDirectoryBtn" class="button secondary compact-button" type="button" hidden>恢复默认位置</button>
+                </div>
+            </div>
+            <div id="obsidianSettings" class="obsidian-settings" hidden>
+                <label class="field">
+                    <span>Obsidian 仓库位置</span>
+                    <input id="obsidianVault" type="text" placeholder="例如 D:\Notes\MyVault" autocomplete="off">
+                    <small>填写已有仓库文件夹的完整路径。生成后会将笔记和截图直接保存进去。</small>
+                </label>
+                <label class="field">
+                    <span>笔记保存文件夹</span>
+                    <input id="obsidianNoteFolder" type="text" placeholder="例如 视频笔记（留空放在仓库根目录）" autocomplete="off">
+                    <small>相对于仓库根目录，可填写多级文件夹。</small>
+                </label>
+                <label class="field">
+                    <span>图片默认保存位置</span>
+                    <select id="obsidianAttachmentMode">
+                        <option value="vault_root">仓库的根目录</option>
+                        <option value="note_folder">当前文件所在的文件夹</option>
+                        <option value="note_subfolder" selected>当前文件所在文件夹下指定的子文件夹</option>
+                        <option value="specified_folder">指定的文件夹</option>
+                    </select>
+                </label>
+                <label class="field" id="obsidianAttachmentFolderField">
+                    <span id="obsidianAttachmentFolderLabel">附件子文件夹</span>
+                    <input id="obsidianAttachmentFolder" type="text" value="attachments" placeholder="例如 pictures" autocomplete="off">
+                    <small id="obsidianAttachmentFolderHint">相对于笔记所在文件夹。</small>
+                </label>
+                <label class="field"><span><input id="obsidianTags" type="checkbox"> 添加标签</span><small>在笔记末尾添加主题标签，方便分类和查找。</small></label>
+                <label class="field"><span><input id="obsidianCallouts" type="checkbox"> 使用提示块</span><small>用提示框突出总结、操作提示或注意事项。</small></label>
+                <p id="obsidianPathPreview" class="model-path" aria-live="polite"></p>
+                <p class="section-note">图片会复制为独立附件，并自动使用相对路径引用。需要视频截图时，请选择「AI 配图」的疏密档位。这些设置会记住，不会修改 Obsidian 自身的配置。</p>
+            </div>
+            </div>
+            </div>
+            </div>
+            <div class="source-controls">
+                <label class="field source-type-field">
+                    <span class="sr-only">来源类型</span>
+                    <select id="sourceType">
+                        <option value="url">视频链接</option>
+                        <option value="local">本地视频</option>
+                        <option value="audio">音频转笔记</option>
+                    </select>
+                </label>
+                <label id="urlField" class="field source-input-field">
+                    <span class="sr-only">视频链接</span>
+                    <input type="url" id="videoUrl" placeholder="粘贴 B 站、抖音或 YouTube 视频链接，也支持分享文本">
+                </label>
+                <label id="fileField" class="file-picker" hidden>
+                    <input type="file" id="localFile" accept="video/*,audio/*">
+                    <span>选择媒体文件</span>
+                </label>
+                <button id="submitBtn" class="button primary submit-button" type="button">
+                    <span class="button-spinner" aria-hidden="true"></span>
+                    <span class="btn-text">开始生成</span>
+                </button>
+            </div>
+            <div id="biliPagesPanel" class="bili-pages-panel" hidden>
+                <div class="bili-pages-head">
+                    <div class="bili-pages-titles">
+                        <strong id="biliPagesSummary"></strong>
+                        <small>默认不勾选，请勾出要转写的分 P（链接带 ?p=N 时已预勾那一个）</small>
+                    </div>
+                    <div class="bili-pages-actions">
+                        <button id="biliPagesAllBtn" class="button ghost compact-button" type="button">全选</button>
+                        <button id="biliPagesNoneBtn" class="button ghost compact-button" type="button">全不选</button>
+                        <button id="biliPagesInvertBtn" class="button ghost compact-button" type="button">反选</button>
+                    </div>
+                </div>
+                <div id="biliPagesList" class="bili-pages-list" role="group" aria-label="勾选要转写的分 P"></div>
+            </div>
+            <div id="transcriptModeHintRegion" class="mode-note-region" inert><div class="mode-note-inner"><p id="outputModeHint" class="output-mode-hint"></p></div></div>
+            <div id="biliHint" class="hint-bar" hidden>
+                <div class="hint-text">
+                    <strong id="biliHintTitle">检测到 B 站链接</strong>
+                    <span id="biliHintDesc">填写访问凭据可优先使用 AI 字幕，无需等待本地转写。</span>
+                </div>
+                <div class="hint-actions" id="biliHintActions">
+                    <button id="biliHintScanBtn" class="button secondary" type="button">扫码登录导入</button>
+                    <button id="biliHintManualBtn" class="button ghost" type="button">去填写</button>
+                    <button id="douyinLoginBtn" class="button secondary" type="button" hidden>打开抖音浏览器</button>
+                    <span id="douyinLoginStatus" class="bili-login-status"></span>
+                    <button id="biliHintDismissBtn" class="hint-dismiss" type="button" title="忽略，本次会话不再提醒">✕</button>
+                </div>
+            </div>
+            <div class="source-meta">
+                <span id="fileInfo">支持 B 站/抖音等视频链接与最大 2 GB 的本地视频</span>
+                <span>处理在本机后端完成</span>
+            </div>
+            </div>
+            </div>
+        </section>
+
+        <section id="recentTasksPanel" class="recent-panel" aria-labelledby="recentTasksTitle" hidden>
+            <div class="section-heading recent-heading">
+                <div>
+                    <h3 id="recentTasksTitle">历史任务</h3>
+                </div>
+                <div class="recent-task-actions">
+                    <label class="check-field"><input id="selectAllRecentTasks" type="checkbox"><span>全选当前列表</span></label>
+                    <button id="deleteSelectedTasksBtn" class="button ghost compact-button" type="button" disabled>删除所选（0）</button>
+                    <button id="refreshRecentTasksBtn" class="button ghost compact-button" type="button">刷新</button>
+                </div>
+            </div>
+            <div class="history-filters">
+                <label class="field"><span>搜索标题</span><input id="historySearch" type="search" maxlength="200" placeholder="输入任务标题"></label>
+                <label class="field"><span>任务状态</span><select id="historyStatus"><option value="">全部状态</option><option value="active">进行中或等待处理</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="uploaded">已上传</option></select></label>
+                <label class="field"><span>内容类型</span><select id="historyOutput"><option value="">全部类型</option><option value="note">笔记</option><option value="transcript">转录</option></select></label>
+                <label class="field"><span>开始日期</span><input id="historyStartDate" type="date"></label>
+                <label class="field"><span>结束日期</span><input id="historyEndDate" type="date"></label>
+                <button id="clearHistoryFiltersBtn" class="button ghost compact-button" type="button">清除筛选</button>
+            </div>
+            <p id="historyEmpty" role="status" hidden>没有匹配的任务</p>
+            <div id="recentTaskList" class="recent-task-list"></div>
+            <div class="history-pagination"><span id="historyCount" role="status"></span><button id="loadMoreHistoryBtn" type="button" class="button ghost compact-button" hidden>加载更多</button></div>
+        </section>
+
+        <section id="progressArea" class="task-panel" aria-labelledby="progressTitle" hidden>
+            <div class="section-heading progress-heading">
+                <div>
+                    <span class="section-kicker">任务</span>
+                    <h3 id="progressTitle">处理进度</h3>
+                </div>
+                <div class="progress-summary">
+                    <button id="cancelTaskBtn" class="button cancel-button" type="button" hidden disabled>取消任务</button>
+                    <span id="taskState" class="status-badge processing">准备中</span>
+                    <span class="elapsed-label">用时 <strong id="elapsedTime">00:00</strong></span>
+                    <strong id="progressPercent">0%</strong>
+                </div>
+            </div>
+
+            <div class="progress-bar" role="progressbar" aria-label="处理进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <ol class="progress-steps">
+                <li class="step" data-step="1"><span>1</span><em>读取信息</em></li>
+                <li class="step" data-step="2"><span>2</span><em>查找字幕</em></li>
+                <li class="step" data-step="3"><span>3</span><em>准备音频</em></li>
+                <li class="step" data-step="4"><span>4</span><em>语音转写</em></li>
+                <li class="step" data-step="5"><span>5</span><em>AI 选图</em></li>
+                <li class="step" data-step="6"><span>6</span><em>生成笔记</em></li>
+            </ol>
+
+            <div id="taskScreenshotWarning" class="task-advisory" role="alert" hidden></div>
+            <div id="taskAdvisory" class="task-advisory" hidden></div>
+
+            <div id="agentResultPanel" class="agent-result-panel" hidden>
+                <div id="agentRunInfo" class="agent-run-info" role="status" hidden></div>
+                <p id="agentWaitingMessage">材料已准备好，请在已连接 MCP 的 agent 中说“处理待生成笔记”，结果会自动回到网页。</p>
+                <div id="agentAutomaticActions" class="error-actions">
+                    <button id="agentAutoRetryBtn" class="button secondary" type="button">自动处理当前任务</button>
+                </div>
+                <details id="agentManualFallback" class="agent-manual-fallback">
+                    <summary>手动处理（备用）</summary>
+                    <p class="section-note">复制任务包交给 AI，再粘贴 AI 生成的笔记正文并提交。</p>
+                    <div class="error-actions">
+                <button id="copyAgentPacketBtn" type="button" class="button secondary">复制任务包</button>
+                </div>
+                <label for="agentResultText">粘贴笔记正文</label>
+                <textarea id="agentResultText" rows="5" placeholder="粘贴 AI 生成的笔记正文。"></textarea>
+                <button id="importAgentResultBtn" type="button" class="button">提交笔记</button>
+                </details>
+            </div>
+            <div id="transcriptReviewNotice" class="output-notice" hidden>
+                <span>字幕有待确认的内容，确认后继续生成。</span>
+                <button id="openTranscriptReviewBtn" type="button" class="button secondary compact-button">检查转写内容</button>
+            </div>
+            <div id="taskError" class="error-panel" role="alert" hidden>
+                <strong>任务未完成</strong>
+                <p id="taskErrorMessage"></p>
+                <div class="error-actions">
+                    <button id="restartBtn" class="button ghost" type="button">从头重跑</button>
+                </div>
+            </div>
+
+            <div id="taskConnectionNotice" class="task-advisory" role="status" hidden>
+                <p>连接中断，任务状态待确认</p>
+                <p>后台任务可能仍在运行。已保留原任务，请确认本地服务可用后重新连接。</p>
+                <button id="reconnectTaskBtn" class="button secondary compact-button" type="button">重新连接</button>
+            </div>
+
+            <div class="log-header">
+                <span>运行记录</span>
+                <span id="networkState">等待任务</span>
+            </div>
+            <div class="log-area" id="logArea" aria-live="polite">
+                <div class="log-entry">等待任务开始</div>
+            </div>
+        </section>
+
+        <section id="resultArea" class="result-panel" aria-labelledby="resultTitle" hidden>
+            <div class="section-heading result-heading">
+                <div>
+                    <span class="section-kicker">输出</span>
+                    <h3 id="resultTitle">视频笔记</h3>
+                </div>
+                <div class="result-actions">
+                    <button id="reviewToggleBtn" class="button ghost" type="button" aria-expanded="false">字幕对照与回看</button>
+                    <button id="exportSubtitleBtn" class="button ghost" type="button" disabled>导出字幕（SRT）</button>
+                    <button id="copyNoteBtn" class="button ghost" type="button" disabled>复制笔记</button>
+                    <button id="downloadMdBtn" class="button secondary" type="button" disabled>
+                        <span class="button-spinner" aria-hidden="true"></span>
+                        <span class="btn-text">下载</span>
+                    </button>
+                </div>
+            </div>
+            <div id="outputNotice" class="output-notice" hidden>
+                <div class="output-actions">
+                    <button id="openOutputFileBtn" class="button ghost compact-button" type="button" disabled>打开文件</button>
+                    <button id="openOutputFolderBtn" class="button ghost compact-button" type="button" disabled>打开所在文件夹</button>
+                    <button id="copyOutputPathBtn" class="button ghost compact-button" type="button" disabled>复制路径</button>
+                </div>
+                <div class="output-path-row"><span id="outputPathLabel">输出文件已保存在</span> <code id="outputPath"></code></div>
+                <div id="taskDirNotice" class="output-path-row" hidden><span>任务目录</span> <code id="taskDirPath"></code></div>
+                <div id="videoPathNotice" class="output-path-row" hidden><span>视频保存地址</span> <code id="videoSavePath"></code></div>
+            </div>
+            <div id="noteReviewLayout" class="note-review-layout">
+                <article id="markdownContent" class="markdown-body"></article>
+                <aside id="noteReviewPanel" class="note-review-panel" aria-labelledby="noteReviewTitle" hidden>
+                    <h4 id="noteReviewTitle">原字幕与时间点回看</h4>
+                    <p id="noteReviewStatus" class="review-status" role="status"></p>
+                    <video id="reviewPlayer" controls preload="none" playsinline hidden></video>
+                    <a id="reviewSourceLink" class="review-source-link" target="_blank" rel="noopener noreferrer" hidden>打开原视频</a>
+                    <label class="field"><span class="sr-only">搜索原字幕</span><input id="reviewSearch" type="search" placeholder="搜索原字幕"></label>
+                    <div id="reviewSegments" class="review-segments"></div>
+                    <div class="review-pagination">
+                        <button id="reviewPrevBtn" class="button ghost compact-button" type="button">上一页</button>
+                        <span id="reviewPageInfo" aria-live="polite"></span>
+                        <button id="reviewNextBtn" class="button ghost compact-button" type="button">下一页</button>
+                    </div>
+                </aside>
+            </div>
+
+        </section>
+    </main>
+</div>
+
+<dialog id="updateModal" class="update-modal" aria-labelledby="updateTitle" aria-describedby="updateBody" hidden>
+    <div class="modal-card">
+        <h3 id="updateTitle" data-no-i18n>发现新版本</h3>
+        <p id="updateBody" class="update-body" data-no-i18n></p>
+        <div class="update-release-links">
+            <div class="update-release-row">
+                <a id="updateGithubLink" href="https://github.com/hehe1885/AI-Video-Note/releases/latest" class="update-site-button" target="_blank" rel="noopener noreferrer" data-no-i18n><svg class="update-site-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg><span>GitHub</span></a>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button id="updateIgnoreBtn" class="button ghost" type="button">忽略本次更新</button>
+            <button id="updateCancelBtn" class="button ghost" type="button">取消</button>
+        </div>
+    </div>
+</dialog>
+
+<div id="transcriptReviewModal" class="modal-backdrop transcript-review-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="transcriptReviewTitle" aria-describedby="transcriptReviewDescription">
+        <h3 id="transcriptReviewTitle">确认转写内容</h3>
+        <p id="transcriptReviewDescription">以下转写内容可能影响理解。请确认原文，或修改后继续生成笔记。</p>
+        <small class="transcript-review-help">可信度是模型自评，并非实测正确率。高可信建议预填，可逐项撤回；中低可信建议请结合音频核对。</small>
+        <div class="transcript-review-tools">
+            <button id="transcriptReviewAiBtn" class="button ghost compact-button" type="button" aria-label="让AI校对字幕">✨ AI校对</button>
+            <button id="transcriptReviewHighBtn" class="button ghost compact-button" type="button">采纳高可信建议</button>
+        </div>
+        <div id="transcriptReviewItems" class="transcript-review-items"></div>
+        <p id="transcriptReviewStatus" role="status" aria-live="polite"></p>
+        <div class="modal-actions">
+            <button id="transcriptReviewApplyBtn" class="button" type="button" disabled>应用修改并继续</button>
+            <button id="transcriptReviewKeepBtn" class="button ghost" type="button" disabled>保留全部原文并继续</button>
+            <button id="transcriptReviewLaterBtn" class="button ghost" type="button">暂不确认</button>
+        </div>
+    </div>
+</div>
+
+<dialog id="gpuRuntimeDialog" class="manual-import-dialog gpu-runtime-dialog" aria-labelledby="gpuRuntimeDialogTitle" aria-describedby="gpuRuntimeDialogDescription">
+    <div class="manual-import-content">
+        <h3 id="gpuRuntimeDialogTitle">安装显卡加速组件</h3>
+        <p id="gpuRuntimeDialogDescription">按当前显卡准备所需组件，已有可用组件会直接复用。</p>
+        <section id="gpuRuntimeCudaSteps" hidden>
+            <p>需要 CUDA 12.x 和 cuDNN 9（CUDA 12 版本）。</p>
+            <p>下载约 1.3 GB，安装后约 1.9 GB。安装到系统标准目录时，可能需要在 Windows 窗口中确认管理员权限。</p>
+        </section>
+        <section id="gpuRuntimeVulkanSteps" hidden>
+            <p>需要 Vulkan 识别组件 1.9.1，下载约 35 MB，将安装到 NuGet 标准包目录。</p>
+        </section>
+        <progress id="gpuRuntimeInstallProgress" aria-label="组件安装进度" hidden></progress>
+        <p id="gpuRuntimeDialogStatus" role="status" aria-live="polite"></p>
+        <div class="modal-actions">
+            <button id="gpuRuntimeInstallBtn" class="button" type="button">一键安装</button>
+            <button id="gpuRuntimeManualOpenBtn" class="button ghost" type="button">手动安装</button>
+            <button id="gpuRuntimeRecheckBtn" class="button ghost" type="button">重新检测</button>
+            <button id="gpuRuntimeCloseBtn" class="button" type="button">知道了</button>
+        </div>
+    </div>
+</dialog>
+
+<dialog id="gpuRuntimeManualDialog" class="manual-import-dialog gpu-runtime-dialog" aria-labelledby="gpuRuntimeManualTitle">
+    <div class="manual-import-content">
+        <h3 id="gpuRuntimeManualTitle">手动安装显卡加速组件</h3>
+        <p>选择对应显卡查看版本和安装步骤。安装时保留官方默认位置。</p>
+        <details id="gpuManualCudaDetails" open>
+            <summary>NVIDIA 显卡（CUDA）</summary>
+            <p>需要 CUDA 12.x（包含 cuBLAS）与 cuDNN 9 的 CUDA 12 版本。</p>
+            <ol class="manual-import-steps">
+                <li>分别按照下方官方说明下载安装 CUDA 和 cuDNN，保留默认安装位置。</li>
+                <li>安装完成后，从托盘重启软件，再使用显卡加速。</li>
+            </ol>
+            <p class="gpu-runtime-guides">
+                <a href="https://docs.nvidia.com/cuda/archive/12.9.1/cuda-installation-guide-microsoft-windows/index.html" target="_blank" rel="noopener noreferrer">CUDA 12 官方安装说明</a>
+                <a href="https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html" target="_blank" rel="noopener noreferrer">cuDNN 9 官方安装说明</a>
+            </p>
+        </details>
+        <details id="gpuManualVulkanDetails">
+            <summary>AMD / Intel 等显卡（Vulkan）</summary>
+            <p>需要支持 Vulkan 的显卡驱动，以及 Vulkan 识别组件 1.9.1；无需安装开发 SDK。</p>
+            <p class="gpu-runtime-guides">
+                <a href="https://www.amd.com/en/support/download/drivers.html" target="_blank" rel="noopener noreferrer">AMD 官方驱动</a>
+                <a href="https://www.intel.com/content/www/us/en/download-center/home.html" target="_blank" rel="noopener noreferrer">Intel 官方驱动</a>
+                <a href="https://www.nuget.org/packages/Whisper.net.Runtime.Vulkan/1.9.1" target="_blank" rel="noopener noreferrer">Vulkan 组件 1.9.1 官方下载</a>
+            </p>
+            <ol class="manual-import-steps">
+                <li>需要时按显卡厂商说明安装驱动，然后下载上方 NuGet 页面中的 1.9.1 安装包。</li>
+                <li>创建下面的缓存文件夹，把安装包放入其中，保留以下文件名。再点击一键安装，软件会校验本地包后安装。</li>
+            </ol>
+            <p><code data-no-i18n>%LOCALAPPDATA%\AI-Video-Note\gpu-installs</code></p>
+            <p><code data-no-i18n>whisper.net.runtime.vulkan.1.9.1.nupkg</code></p>
+        </details>
+        <div class="modal-actions">
+            <button id="gpuRuntimeManualCloseBtn" class="button" type="button">关闭</button>
+        </div>
+    </div>
+</dialog>
+
+<dialog id="storageDialog" class="storage-dialog" aria-labelledby="storageTitle" aria-describedby="storageHelp">
+    <h3 id="storageTitle">存储与缓存</h3>
+    <p id="storageHelp" class="section-note">统计素材与当前模型目录，不包含依赖组件和另存的副本。共享文件在合计中只计一次。</p>
+    <dl id="storageSizes" class="storage-sizes"></dl>
+    <p class="section-note">缓存清理保留历史记录、笔记、字幕、截图和模型。音视频缓存清理后，再次处理可能需要重新下载。</p>
+    <p class="section-note">模型可通过模型管理单独删除。</p>
+    <div class="storage-choices">
+        <label class="check-field"><input id="storageAudio" type="checkbox" checked>共享音频缓存</label>
+        <label class="check-field"><input id="storageVideo" type="checkbox" checked>共享视频缓存</label>
+    </div>
+    <p id="storageStatus" role="status" aria-live="polite" data-no-i18n></p>
+    <section id="storagePreview" class="storage-preview" hidden>
+        <p id="storagePreviewSummary" data-no-i18n></p>
+        <p class="section-note">部分素材共享存储，实际释放空间可能少于文件大小。</p>
+        <ul id="storagePreviewFiles" data-no-i18n></ul>
+    </section>
+    <div class="modal-actions">
+        <button id="storageRefreshBtn" class="button ghost" type="button">刷新统计</button>
+        <button id="storageCleanBtn" class="button" type="button" disabled>清理缓存</button>
+        <button id="storageCloseBtn" class="button ghost" type="button">关闭</button>
+    </div>
+</dialog>
+
+<div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+<script src="locales/en.js?v=20261101-1"></script>
+<script src="i18n.js?v=20261019-1"></script>
+<script src="api.js?v=20261013-2"></script>
+<script src="tasks.js?v=20261031-2"></script>
+<script src="settings.js?v=20261021-4"></script>
+<script src="gpu-runtime.js?v=20261016-1"></script>
+<script src="script.js?v=20261101-1"></script>
+<script src="date-picker.js?v=20261019-2"></script>
+<script src="transcript-review.js?v=20261018-2"></script>
+<script src="note-view.js?v=20261031-2"></script>
+<script src="note-tools.js?v=20261019-1"></script>
+<script src="storage-tools.js?v=20261031-2"></script>
+<script src="motion.js?v=20261019-7"></script>
+</body>
+</html>
