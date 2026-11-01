@@ -115,7 +115,6 @@ jobs:
           path: |
             dist/AI-Video-Note-${{ env.VERSION }}-portable.exe
             dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe
-            dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe.sha256
           if-no-files-found: error
 
   publish:
