@@ -1,6 +1,12 @@
 # AI Video Note
 
-[中文](README.md) · **English** · [Support development on Ko-fi](https://ko-fi.com/hehe1885)
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-64748B?style=flat-square" alt="简体中文" height="36"></a>
+  &nbsp;
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-1F6FEB?style=flat-square" alt="English" height="36"></a>
+  &nbsp;
+  <a href="https://ko-fi.com/hehe1885"><img src="https://img.shields.io/badge/Ko--fi-Support-FF5E5B?style=flat-square&amp;logo=kofi&amp;logoColor=white" alt="Support development on Ko-fi" height="36"></a>
+</p>
 
 A local desktop tool that turns video and audio into notes. Submit a video link or local file, extract subtitles or transcribe speech, then use AI to review, organize and export the result. Switch between Chinese and English using the control in the top-right corner.
 

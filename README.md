@@ -1,6 +1,12 @@
 # AI Video Note
 
-**中文** · [English](README.en.md) · [Ko-fi 支持开发](https://ko-fi.com/hehe1885)
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-1F6FEB?style=flat-square" alt="简体中文" height="36"></a>
+  &nbsp;
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-64748B?style=flat-square" alt="English" height="36"></a>
+  &nbsp;
+  <a href="https://ko-fi.com/hehe1885"><img src="https://img.shields.io/badge/Ko--fi-%E6%94%AF%E6%8C%81%E5%BC%80%E5%8F%91-FF5E5B?style=flat-square&amp;logo=kofi&amp;logoColor=white" alt="通过 Ko-fi 支持开发" height="36"></a>
+</p>
 
 把视频和音频整理成笔记的本地桌面工具。提交视频链接或本地文件，提取字幕或识别语音，再由 AI 校对、整理和导出。界面支持中文与英文，可在右上角切换。
 
