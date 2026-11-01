@@ -1,25 +1,85 @@
 # AI Video Note
 
 <p align="center">
-  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-64748B?style=flat-square" alt="简体中文" height="36"></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-64748B?style=flat-square" alt="简体中文" height="48"></a>
   &nbsp;
-  <a href="README.en.md"><img src="https://img.shields.io/badge/English-1F6FEB?style=flat-square" alt="English" height="36"></a>
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-1F6FEB?style=flat-square" alt="English" height="48"></a>
   &nbsp;
-  <a href="https://ko-fi.com/hehe1885"><img src="https://img.shields.io/badge/Ko--fi-Support-FF5E5B?style=flat-square&amp;logo=kofi&amp;logoColor=white" alt="Support development on Ko-fi" height="36"></a>
+  <a href="https://ko-fi.com/hehe1885"><img src="https://img.shields.io/badge/Ko--fi-Support-FF5E5B?style=flat-square&amp;logo=kofi&amp;logoColor=white" alt="Support development on Ko-fi" height="48"></a>
 </p>
 
 A local desktop tool that turns video and audio into notes. Submit a video link or local file, extract subtitles or transcribe speech, then use AI to review, organize and export the result. Switch between Chinese and English using the control in the top-right corner.
 
 ## Features
 
-- Bilibili, YouTube and Douyin links, plus local video and audio. Platform availability depends on network access, sign-in requirements and platform rules.
-- Reliable original-language subtitles first, with local speech recognition when subtitles are unavailable. Supports Whisper and Chinese Paraformer models.
-- Detailed, faithful and concise note styles, with timestamps, video screenshots and transcript review.
-- Configurable model APIs and collaboration through Agents, MCP or the included Skill. Agent workflows require an available external client.
-- Markdown, Word, PDF, HTML, PNG, TXT, JSON and Evernote ENEX exports, with support for Obsidian folders.
-- Segmented processing and saved progress for long tasks, history, and regeneration using existing materials.
-- Output file shortcuts, storage statistics and audio/video cache cleanup.
-- Windows system tray, optional startup with Windows, Chinese/English UI and light/dark themes.
+Bring media import, transcript preparation, illustrated AI notes and document or knowledge-base exports together in one interface.
+
+![English workspace and note generation settings](docs/images/workspace-en.png)
+
+*English interface example: choose a media source, note format, style, language and save location.*
+
+### Video links and local media
+
+- **Online links:** Bilibili, YouTube and Douyin, including shared text containing a video URL. Select individual parts of a multi-part Bilibili video.
+- **Local files:** import video or audio to generate notes, or choose **Transcribe only** to keep a transcript without generating notes.
+- **Material reuse:** reuse existing subtitles and cached audio or video when available to reduce repeated downloads and processing. Platform availability depends on network access, sign-in requirements and platform rules.
+
+### Subtitles, local speech recognition and review
+
+- Prefer reliable original-language subtitles, with local speech recognition when subtitles are unavailable. Supports multilingual Whisper models and Chinese Paraformer models.
+- Download or manually import models and choose their storage location. Run on CPU or use a compatible GPU, with CPU fallback when acceleration is unavailable.
+- Use AI transcript review and check passages that need confirmation. After generation, open **Compare and replay** to compare notes with source text and timestamps.
+- Export **SRT subtitles** separately, preserving the original timing for editing and caption workflows.
+
+### AI notes for different purposes
+
+- Choose **Detailed notes, Key summary, Study guide, Step-by-step tutorial or Meeting minutes** for courses, tutorials, interviews and meetings.
+- Set text detail to brief, standard or detailed. Generate Chinese or English notes and choose where timestamps, source links and a separate AI commentary section appear.
+- Add custom instructions, render LaTeX formulas, and save or apply generation templates to reuse frequently used settings.
+
+### AI illustrations from video frames
+
+**AI illustrations use timestamped transcripts to select real frames from the source video and place them near the relevant points in your notes.** Image density and text detail are independent, making this useful for slides, charts and demonstrations.
+
+- **Image density:** choose no images, few, medium or many. AI plans screenshot timestamps based on the content.
+- **Visual verification (optional):** when the selected model supports vision, check whether candidate frames match the associated explanation to reduce irrelevant or mistimed images.
+- **Automatic cropping (optional):** with visual verification enabled, let AI select a relevant region. Original images are retained; the full frame is used if the crop fails verification.
+- **Timed screenshots:** specify a fixed interval to capture frames at regular times instead of using AI-selected timestamps.
+- **Quality and attachments:** configure screenshot video quality, encoding and cache location. Images are saved according to the chosen export format; Obsidian supports separate attachments with relative links.
+
+<p align="center">
+  <img src="docs/images/ai-illustrations-en.png" alt="AI illustrations, visual verification, automatic cropping and timed screenshot settings" width="665">
+</p>
+
+*AI illustration settings example. Visual verification and cropping require a working vision model and send candidate images to the selected service or client, which may add processing time and cost. Audio-only sources have no video frames to capture.*
+
+### API and Agent workflows
+
+- **API mode:** configure your model service, endpoint and API key. The app calls the model for transcript review, screenshot selection and note generation.
+- **Agent mode:** let an external AI client process prepared materials through MCP or the included Skill, with results returned to the app. Manual result submission is also available as a fallback.
+- Configure the note-writing model separately from local speech recognition. Agent workflows require an available external client and its model; API workflows may incur provider charges.
+
+### Exports and knowledge-base integration
+
+| Use case | Supported output |
+| --- | --- |
+| Everyday notes and document editing | Markdown, Word (DOCX), plain text (TXT) |
+| Reading, printing and web sharing | PDF, HTML, PNG as a long image or 3:4 pages |
+| Knowledge-base organization | Obsidian vaults, Evernote (ENEX) |
+| Further processing and subtitles | JSON, SRT subtitles |
+
+Choose where to save notes. For Obsidian, configure note folders, attachment locations, tags and callouts. Open the output file or its folder, or copy its path directly after generation.
+
+### History, progress and cache management
+
+- Process long tasks in segments, show stages, progress and logs, and save intermediate materials. Reopen historical tasks or regenerate notes from existing materials.
+- Filter history by title, status, output type and date to find and manage earlier work.
+- View storage statistics and clean audio/video caches. Opening the cleanup dialog previews the files; **Clean cache** performs the deletion. Notes, subtitles, screenshots, history and models are preserved.
+- Manage or delete models separately, import and export settings, check the environment and repair dependencies.
+
+### Desktop experience
+
+Windows system tray, optional startup with Windows, Chinese and English interfaces, light / dark / system themes, and keyboard access for common controls and dialogs. Updates preserve the workspace and existing startup preference. Uninstalling removes startup entries belonging to the current installation while retaining user data.
 
 ## Windows installer (recommended)
 
