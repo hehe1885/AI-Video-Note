@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hehe1885.github.io/AI-Video-Note/sitemap.xml
