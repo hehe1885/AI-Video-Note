@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import pytest
 
 import launcher
 
@@ -209,10 +210,12 @@ def test_update_dialog_runs_outside_tray_thread_and_deduplicates(monkeypatch):
     assert not launcher._update_check_lock.locked()
 
 
-def test_update_message_identifies_own_repository(monkeypatch):
+@pytest.mark.parametrize('language,current_label', [('zh-CN', '当前版本'), ('en', 'Current version')])
+def test_update_message_identifies_own_repository(monkeypatch, language, current_label):
     messages = []
+    monkeypatch.setattr(launcher, 'update_language', lambda: language)
     monkeypatch.setattr(launcher, 'latest_release_info', lambda: {'tag_name': launcher.VERSION,'html_url':'unused'})
     monkeypatch.setattr(launcher, 'show_update_message', lambda message, **kwargs: messages.append(message))
     launcher.check_for_updates()
     assert 'hehe1885/AI-Video-Note' in messages[0]
-    assert '当前版本' in messages[0]
+    assert current_label in messages[0]

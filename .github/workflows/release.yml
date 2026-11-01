@@ -49,6 +49,9 @@ jobs:
           if tag != f"v{version}":
               raise SystemExit(f"Tag {tag!r} does not match launcher version {version!r}")
 
+      - name: Prepare Linux browser for formula exports
+        run: bash scripts/prepare_ci_browser.sh
+
       - name: Run tests
         run: python -m pytest
 

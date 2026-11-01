@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import os
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -11,6 +13,7 @@ from backend import gpu_runtime as r, main, whisper_vulkan as v
 
 
 def fake_system(monkeypatch, tmp_path):
+    monkeypatch.setattr(r, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
     monkeypatch.setenv('ProgramW6432', str(tmp_path / 'Program Files'))
     monkeypatch.setenv('PATH', '')
     for key in list(r.os.environ):
@@ -43,7 +46,7 @@ def test_dll_handles_survive_lazy_inference_with_idempotent_process_path(monkeyp
     handles = []
     monkeypatch.setattr(r, 'cuda_directories', lambda: [directory])
     monkeypatch.setattr(r, '_handles', {})
-    monkeypatch.setattr(r.os, 'add_dll_directory', lambda path: handles.append(object()) or handles[-1])
+    monkeypatch.setattr(r.os, 'add_dll_directory', lambda path: handles.append(object()) or handles[-1], raising=False)
     monkeypatch.setenv('PATH', str(tmp_path / 'other-bin'))
     original = r.os.environ['PATH']
     r.activate_cuda_libraries(); r.activate_cuda_libraries()
@@ -61,6 +64,7 @@ def test_nuget_override_is_respected_but_relative_path_is_rejected(monkeypatch, 
 
 
 def make_package(tmp_path, monkeypatch, entries=None):
+    monkeypatch.setattr(v, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
     archive = tmp_path / 'fixture.nupkg'
     with zipfile.ZipFile(archive, 'w') as package:
         for name in v.DLLS: package.writestr('build/win-x64/' + name, b'official fixture')

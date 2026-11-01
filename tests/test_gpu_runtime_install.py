@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -14,6 +15,10 @@ from backend import gpu_runtime_install as i, main, gpu_devices, whisper_vulkan 
 
 @pytest.fixture(autouse=True)
 def isolated_cache(monkeypatch, tmp_path):
+    # Exercise Windows installation logic with fake packages on every CI host.
+    # Keep the real os module unchanged so pathlib/pytest retain the host platform.
+    monkeypatch.setattr(i, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
+    monkeypatch.setattr(v, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
     monkeypatch.setattr(i, 'download_directory', lambda: tmp_path / 'download-cache')
 
 
@@ -186,3 +191,24 @@ def test_probe_flag_bypasses_tray_and_launcher_startup(monkeypatch):
     monkeypatch.setattr(launcher, 'configure_runtime_dirs', lambda: pytest.fail('probe must not start the app'))
     assert launcher.main() == 0
     assert calls == ['cuda']
+
+
+@pytest.mark.parametrize('system,machine', [('posix', 'x86_64'), ('nt', 'arm64')])
+def test_native_installer_rejects_unsupported_hosts_before_starting(monkeypatch, system, machine):
+    monkeypatch.setattr(i, 'os', SimpleNamespace(**{**vars(os), 'name': system}))
+    monkeypatch.setattr(i.platform, 'machine', lambda: machine)
+    manager = i.GpuRuntimeInstalls()
+    with pytest.raises(ValueError, match='Windows 64'):
+        manager.start('cuda')
+    assert manager.thread is None
+    assert manager.snapshot()['status'] == 'idle'
+
+
+@pytest.mark.parametrize('system,machine', [('posix', 'x86_64'), ('nt', 'arm64')])
+def test_vulkan_package_rejects_unsupported_hosts_before_writing(tmp_path, monkeypatch, system, machine):
+    monkeypatch.setattr(v, 'os', SimpleNamespace(**{**vars(os), 'name': system}))
+    monkeypatch.setattr(v.platform, 'machine', lambda: machine)
+    monkeypatch.setenv('NUGET_PACKAGES', str(tmp_path / 'packages'))
+    with pytest.raises(RuntimeError, match='Windows 64'):
+        v.ensure_runtime(tmp_path / 'models')
+    assert not (tmp_path / 'packages').exists()

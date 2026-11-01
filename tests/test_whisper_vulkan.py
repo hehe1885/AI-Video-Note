@@ -1,7 +1,9 @@
 import asyncio
 import ctypes as c
+import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -92,6 +94,7 @@ def test_discrete_gpu_wins_even_if_integrated_is_listed_first(vendor):
 
 
 def test_runtime_installer_verifies_archive_before_extracting(tmp_path,monkeypatch):
+    monkeypatch.setattr(v, 'os', SimpleNamespace(**{**vars(os), 'name': 'nt'}))
     import hashlib, zipfile
     monkeypatch.setenv('NUGET_PACKAGES', str(tmp_path/'packages'))
     archive=tmp_path/'runtime.nupkg'
