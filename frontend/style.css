@@ -327,6 +327,8 @@ button, select { cursor: pointer; }
 .obsidian-settings[hidden] { display: none; }
 .obsidian-settings .field { margin: 0; }
 .obsidian-settings > p { grid-column: 1 / -1; margin: 0; }
+.obsidian-feature-options { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 24px; }
+@media (max-width: 760px) { .obsidian-feature-options { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .obsidian-settings { grid-template-columns: 1fr; } }
 #deleteModelBtn { color: var(--red); }
 

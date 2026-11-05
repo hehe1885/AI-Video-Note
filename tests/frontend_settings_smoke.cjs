@@ -299,6 +299,30 @@ run("currentTaskId = 'subtitle-export'; currentDownloadName = 'Video';");
 
 
     console.log('Frontend settings and preselected-format download checks passed');
+// Properties opt-out survives form restore, auto-save and actual task submission.
+sandbox.document.documentElement={lang:'zh-CN',dataset:{}};
+run(`renderAgentModelOptions=()=>{};renderProfileOptions=()=>{};renderProfileForm=()=>{};
+     snapshotWhisperLabels=()=>{};renderNoteSaveLocation=()=>{};updateGpuSettings=()=>{};
+     refreshWhisperModelHints=()=>{};updateSummaryStyleHint=()=>{};applyOutputMode=()=>{};
+     applyTheme=()=>{};applyFontSize=()=>{};refreshKeyStatus=()=>{};selectedAgentModel=()=>'';toggleScreenshotSettings=()=>{};
+     persistPrefs=()=>{globalThis.savedPreferences=JSON.parse(JSON.stringify(prefs));};`);
+run(`prefs=mergePrefs({schema:3,global:{note_format:'obsidian',obsidian_vault:'D:/Notes/Vault',note_language:'zh-CN'}});applyPreferencesToForm();`);
+assert.equal(nodes.get('obsidianProperties').checked,true,'Existing users keep properties enabled by default');
+for(const node of nodes.values())node.addEventListener=(name,handler)=>{node.events ||= {};node.events[name]=handler;};
+sandbox.document.querySelectorAll=()=>[];
+run('bindPreferenceAutoSave()');
+nodes.get('obsidianProperties').checked=false;
+nodes.get('obsidianProperties').events.change();
+assert.equal(sandbox.savedPreferences.global.obsidian_properties,false);
+assert.equal(sandbox.savedPreferences.global.obsidian_vault,'D:/Notes/Vault');
+run('prefs=mergePrefs(savedPreferences);applyPreferencesToForm();');
+assert.equal(nodes.get('obsidianProperties').checked,false,'Reload restores explicit opt-out');
+outputMode='note';set('formatSelect','obsidian');
+assert.equal(JSON.parse(run("JSON.stringify(buildSummarizeConfig('https://example.com/video',null))")).obsidian_properties,false);
+nodes.get('obsidianProperties').checked=true;
+assert.equal(JSON.parse(run("JSON.stringify(buildSummarizeConfig('https://example.com/video',null))")).obsidian_properties,true);
+console.log('Obsidian properties default, auto-save, restore and task payload checks passed');
+
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 
 for (const format of ['markdown', 'obsidian', 'docx', 'html', 'json', 'txt', 'png', 'pdf', 'enex']) {

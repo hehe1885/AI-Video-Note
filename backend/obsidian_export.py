@@ -6,6 +6,7 @@ import shutil
 import uuid
 from pathlib import Path
 from urllib.parse import quote
+from .note_markdown import normalize_bold_spacing, rewrite_frame_links
 
 
 def _inside(root: Path, path: Path) -> Path:
@@ -57,12 +58,20 @@ def export_note(content: str, stem: str, screenshots: list[Path], *, vault: str,
         images.mkdir(parents=True, exist_ok=True)
     _inside(root, notes)
     _inside(root, images)
-    token = uuid.uuid4().hex[:12]
+    token = uuid.uuid4().hex
     # The caller sanitizes the video title; enforce a basename here as well.
     if not stem or Path(stem).name != stem or "/" in stem or "\\" in stem:
         raise ValueError("无效的笔记文件名")
     note_path = _inside(root, notes / f"{stem}-{token}.md")
+    for _ in range(100):
+        if not note_path.exists() and not any(images.glob(f'video-{token}-*')):
+            break
+        token = uuid.uuid4().hex
+        note_path = _inside(root, notes / f"{stem}-{token}.md")
+    else:
+        raise FileExistsError('无法创建不重复的 Obsidian 笔记与图片名称')
     created: list[Path] = []
+    destinations = {}
     try:
         for index, source in enumerate(screenshots, start=1):
             target = _inside(root, images / f"video-{token}-{index}{source.suffix}")
@@ -71,7 +80,8 @@ def export_note(content: str, stem: str, screenshots: list[Path], *, vault: str,
                 with source.open("rb") as image:
                     shutil.copyfileobj(image, destination)
             relative = Path(os.path.relpath(target, notes)).as_posix()
-            content = content.replace(f"(./frames/{source.name})", f"({quote(relative, safe='/')})")
+            destinations[source.name] = quote(relative, safe='/')
+        content = rewrite_frame_links(normalize_bold_spacing(content), destinations)
         with note_path.open("x", encoding="utf-8") as output:
             created.append(note_path)
             output.write(content)

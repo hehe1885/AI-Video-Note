@@ -117,7 +117,10 @@ $pyiArgs = @(
     "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--noconsole",
     "--name", "AI-Video-Note",
     "--add-data", "frontend;frontend",
-    "--add-data", "skills/AI-Video-Note;skills/AI-Video-Note",
+    # List skill files explicitly: Python test/import caches can embed private
+    # build-machine paths, so never recursively bundle this directory.
+    "--add-data", "skills/AI-Video-Note/SKILL.md;skills/AI-Video-Note",
+    "--add-data", "skills/AI-Video-Note/scripts/video_note.py;skills/AI-Video-Note/scripts",
     "--add-data", "sources/icon.png;sources",
     "--add-data", "sources/icon.ico;sources",
     "--add-binary", "$NodeExecutable;.runtime/node",

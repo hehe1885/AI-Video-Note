@@ -947,16 +947,29 @@ class VideoProcessor:
         task_dir = cache_directory(root, url, max_height, video_encoding)
         task_dir.mkdir(parents=True, exist_ok=True)
 
+        last_report = 0.0
         def _abort_hook(_status: dict[str, Any]) -> None:
+            nonlocal last_report
             if should_abort is not None and should_abort():
                 raise asyncio.CancelledError("任务已取消")
+            now = time.monotonic()
+            if notes is not None and _status.get("status") == "downloading" and now - last_report >= 10:
+                received = _status.get("downloaded_bytes") or 0
+                total = _status.get("total_bytes") or _status.get("total_bytes_estimate") or 0
+                detail = f"{received / total:.0%}，" if total else ""
+                notes.append(f"配图视频下载：{detail}已接收 {received / 1024 / 1024:.1f} MiB")
+                last_report = now
 
         downloaded_info = {}
         def _download() -> Path:
             try:
-                extra: dict[str, Any] = {}
-                if should_abort is not None:
-                    extra["progress_hooks"] = [_abort_hook]
+                extra: dict[str, Any] = {
+                    "socket_timeout": 20,
+                    "retries": 2,
+                    "fragment_retries": 2,
+                    "extractor_retries": 2,
+                    "progress_hooks": [_abort_hook],
+                }
                 with self._ydl(
                     cookie,
                     cookie_domain=self._cookie_domain_for_url(url),
@@ -1273,8 +1286,8 @@ class VideoProcessor:
                     # Seek lands at an earlier keyframe; decode up to the chosen time.
                     if frame.time is None or frame.time < timestamp:
                         continue
-                    path = frames_dir / f"ai_frame_{len(paths):04d}_{round(timestamp * 1000)}ms.jpg"
-                    frame.to_image().save(path, quality=85)
+                    from .screenshot_files import save_frame
+                    path = save_frame(frame.to_image(), frames_dir, timestamp, task_id=task_id, quality=85)
                     paths[timestamp] = path
                     break
         return paths
@@ -1330,8 +1343,8 @@ class VideoProcessor:
                 frame = next(container.decode(video=0), None)
                 if frame is None:
                     continue
-                path = frames_dir / f"frame_{len(paths):04d}_{timestamp}s.jpg"
-                frame.to_image().save(path, quality=82)
+                from .screenshot_files import save_frame
+                path = save_frame(frame.to_image(), frames_dir, timestamp, task_id=task_id, kind='frame', quality=82)
                 paths.append(path)
         return paths
 

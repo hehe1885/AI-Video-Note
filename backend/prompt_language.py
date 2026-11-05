@@ -14,7 +14,7 @@ DENSITIES = {
 }
 FORMATS = {
     "markdown": "Use clear headings, paragraphs, lists and necessary tables.",
-    "obsidian": "Make the notes suitable for Obsidian. Do not add backlinks, tags or callouts unless requested. The application generates properties.",
+    "obsidian": "Make the notes suitable for Obsidian. Do not add backlinks, tags or callouts unless requested. The application manages properties according to the user setting; do not write YAML note properties yourself.",
     "docx": "Use clear heading levels and body structure; the exporter handles typography. Explain content fully and place images near related text. Follow the requested text detail and illustration settings.",
     "pdf": "Use clear headings, paragraphs, lists and necessary tables for paginated reading. The exporter embeds images and creates PDF pages; do not emit PDF data.",
     "enex": "Use clear headings, paragraphs, lists and necessary tables with images near related text. The exporter creates ENEX; do not emit XML.",

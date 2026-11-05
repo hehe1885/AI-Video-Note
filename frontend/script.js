@@ -2135,6 +2135,7 @@ function buildSummarizeConfig(
         config.custom_prompt = byId('customPrompt').value.trim();
         config.obsidian_tags = isObsidianNote() && byId('obsidianTags').checked;
         config.obsidian_callouts = isObsidianNote() && byId('obsidianCallouts').checked;
+        if (isObsidianNote()) config.obsidian_properties = byId('obsidianProperties').checked;
         if (isObsidianNote()) {
             config.obsidian = {
                 vault: byId('obsidianVault').value.trim(),
@@ -2585,7 +2586,7 @@ function showAgentWaiting(task = {}) {
     byId('agentResultPanel').hidden = false;
     if (byId('agentAutomaticActions')) byId('agentAutomaticActions').hidden = Boolean(task.agent_auto_running);
     if (byId('agentManualFallback')) byId('agentManualFallback').hidden = false;
-    byId('taskAdvisory').hidden = !task.screenshot_warning;
+    byId('taskAdvisory').hidden = !(task.advisory || task.screenshot_warning);
     const waitingMessage = byId('agentWaitingMessage');
     if (waitingMessage) {
         const message = task.agent_auto_running ? 'agent 正在后台自动处理，完成后会显示笔记和下载按钮，无需复制任务包或手动导入。' : '材料已准备好，请在已连接 MCP 的 agent 中说“处理待生成笔记”，结果会自动回到网页。';

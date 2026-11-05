@@ -100,3 +100,44 @@ def test_qwen_and_custom_wrapper_language(tmp_path, monkeypatch):
     args, payload = agent_auto.invocation({'agent_provider':'custom','agent_command':['agent.exe'],'note_language':'en'},
         tmp_path, tmp_path/'out.md', None, [image], 'Original material')
     assert b'Inspect these local images' in payload
+
+
+def test_few_images_empty_plan_completes_text_note(job, monkeypatch):
+    task_id, directory = job
+    data = agent_queue.read_job(task_id)
+    data['settings'].update(screenshot_density='few', vision_screenshots=True)
+    agent_queue.write_job(task_id, data)
+    async def fake_cli(task_id, prompt, schema=None, images=()):
+        if schema:
+            return '{"times":[]}'
+        assert main.tasks[task_id]['step_name'] == '生成笔记'
+        assert '文字笔记' in main.tasks[task_id]['logs'][-1]
+        assert not images
+        return '# 文字笔记\n\n保留视频内容。'
+    monkeypatch.setattr(agent_auto, 'run_cli', fake_cli)
+    asyncio.run(agent_auto.work(task_id))
+    assert main.tasks[task_id]['status'] == 'completed'
+    assert main.tasks[task_id]['result']['screenshot_count'] == 0
+    assert main.tasks[task_id]['result']['screenshot_warning']
+
+
+def test_few_images_all_rejected_completes_text_note(job, monkeypatch):
+    task_id, directory = job
+    data = agent_queue.read_job(task_id)
+    data['settings'].update(screenshot_density='few', vision_screenshots=True)
+    data['screenshots'] = [{'time':3, 'filename':'frame.jpg', 'markdown_ref':'frames/frame.jpg'}]
+    agent_queue.write_job(task_id, data)
+    async def reject(*args):
+        current = agent_queue.read_job(task_id)
+        current['screenshots'] = []
+        agent_queue.write_job(task_id, current)
+        main.tasks[task_id]['screenshot_warning'] = '未找到相关画面，生成文字笔记。'
+        return current
+    async def fake_cli(*args, **kwargs):
+        assert not kwargs.get('images')
+        return '# 文字笔记\n\n没有合适截图时继续正文。'
+    monkeypatch.setattr(agent_auto, 'review_agent_screenshots', reject)
+    monkeypatch.setattr(agent_auto, 'run_cli', fake_cli)
+    asyncio.run(agent_auto.work(task_id))
+    assert main.tasks[task_id]['status'] == 'completed'
+    assert main.tasks[task_id]['result']['screenshot_count'] == 0

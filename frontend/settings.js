@@ -98,7 +98,7 @@ const GLOBAL_PREF_KEYS = [
     'note_format', 'generation_mode', 'agent_execution', 'agent_provider', 'agent_command', 'agent_models', 'agent_model', 'agent_reasoning_effort',
     'screenshot_density', 'timed_screenshots', 'vision_screenshots', 'auto_crop_screenshots',
     'video_resolution', 'video_encoding', 'video_download_directory', 'note_save_directory',
-    'obsidian_tags', 'obsidian_callouts', 'obsidian_vault', 'obsidian_note_folder', 'obsidian_attachment_mode', 'obsidian_attachment_folder',
+    'obsidian_tags', 'obsidian_callouts', 'obsidian_properties', 'obsidian_vault', 'obsidian_note_folder', 'obsidian_attachment_mode', 'obsidian_attachment_folder',
     'whisper_model',
     'screenshot_interval',
     'include_screenshots',
@@ -129,6 +129,7 @@ function defaultPrefs() {
             agent_execution: 'manual', agent_provider: 'codex', agent_command: '', agent_models: {}, agent_model: '', agent_reasoning_effort: 'default',
             obsidian_tags: false,
             obsidian_callouts: false,
+            obsidian_properties: true,
             obsidian_vault: '',
             obsidian_note_folder: '',
             obsidian_attachment_mode: 'note_subfolder',
@@ -507,6 +508,7 @@ function applyPreferencesToForm() {
     updateSummaryStyleHint();
     byId('obsidianTags').checked = Boolean(prefs.global.obsidian_tags);
     byId('obsidianCallouts').checked = Boolean(prefs.global.obsidian_callouts);
+    byId('obsidianProperties').checked = prefs.global.obsidian_properties !== false;
     byId('obsidianVault').value = prefs.global.obsidian_vault || '';
     byId('obsidianNoteFolder').value = prefs.global.obsidian_note_folder || '';
     byId('obsidianAttachmentMode').value = prefs.global.obsidian_attachment_mode || 'note_subfolder';
@@ -679,6 +681,7 @@ function persistGlobals() {
     values.note_format = selectedNoteFormat();
     values.obsidian_tags = byId('obsidianTags').checked;
     values.obsidian_callouts = byId('obsidianCallouts').checked;
+    values.obsidian_properties = byId('obsidianProperties').checked;
     values.obsidian_vault = byId('obsidianVault').value.trim();
     values.obsidian_note_folder = byId('obsidianNoteFolder').value.trim();
     values.obsidian_attachment_mode = byId('obsidianAttachmentMode').value;
@@ -736,7 +739,7 @@ function bindPreferenceAutoSave() {
             bindListener(id, 'input', () => { updateObsidianSettings(); schedulePersist(persistGlobals); });
         }
     });
-    ['obsidianTags', 'obsidianCallouts', 'timelineMode', 'sourceLinkPosition', 'textDetail', 'whisperModel', 'summaryStyle', 'reasoningEffort', 'screenshotDensity', 'videoResolution', 'useGpu']
+    ['obsidianTags', 'obsidianCallouts', 'obsidianProperties', 'timelineMode', 'sourceLinkPosition', 'textDetail', 'whisperModel', 'summaryStyle', 'reasoningEffort', 'screenshotDensity', 'videoResolution', 'useGpu']
         .forEach((id) => bindListener(id, 'change', persistGlobals));
     bindListener('useGpu', 'change', () => { updateGpuSettings(); persistGlobals(); refreshWhisperModelHints(); });
     bindListener('whisperModel', 'change', refreshGpuDetected);

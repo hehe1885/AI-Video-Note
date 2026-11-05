@@ -13,6 +13,15 @@ _NAVIGATION_CODE = re.compile(r'(?m)^([ \t]*(?:[-*+]|\d+[.)])[ \t]+)`' + _TIME_R
 _TIMED_TOC = re.compile(r'(?ms)(^#{1,6}[ \t]+(?:本片目录|视频目录|内容目录|目录|Table of [Cc]ontents|Contents)[ \t]*\n)(.*?)(?=^#{1,6}[ \t]|\Z)')
 
 
+def strip_note_properties(markdown):
+    """Omit leading YAML properties without removing ordinary thematic breaks or code."""
+    text = markdown.lstrip()
+    match = re.match(r'\A---[ \t]*\r?\n(?P<properties>.*?)^---[ \t]*(?:\r?\n|$)', text, re.M | re.S)
+    if match and re.search(r'(?m)^[^\s:#][^:\n]*:(?:[ \t]|$)', match['properties']):
+        return text[match.end():].lstrip('\r\n')
+    return markdown
+
+
 def note_option_prompt(detail, note_language="zh-CN"):
     from .prompt_rules import detail_instructions
     return detail_instructions(detail, note_language)
@@ -74,7 +83,7 @@ def note_format_prompt(format_name, note_language="zh-CN"):
         return prompt_language.format_prompt(format_name)
     requirements = {
         'markdown': ('Markdown 笔记', '使用清晰的标题、段落、列表和必要的表格。'),
-        'obsidian': ('Obsidian 笔记', '适合在 Obsidian 中阅读和整理；除非用户明确要求，不主动添加双向链接、标签或提示块。属性区由程序生成。'),
+        'obsidian': ('Obsidian 笔记', '适合在 Obsidian 中阅读和整理；除非用户明确要求，不主动添加双向链接、标签或提示块。属性区由程序按用户开关统一处理，不要自行输出 YAML 笔记属性。'),
         'docx': ('Word 笔记', '层级分明，标题与正文结构清晰，字号按标题层级区分（由导出程序排版）。文字解释充分，配图与对应内容紧密结合；图文详略遵循用户设置，未启用配图时以完整文字说明。'),
         'pdf': ('PDF 笔记', '使用清晰的标题、段落、列表和必要表格，适合分页阅读与打印；由导出程序完成分页和图片嵌入，不要自行生成 PDF 数据。'),
         'enex': ('印象笔记 / Evernote 笔记', '使用清晰的标题、段落、列表和必要表格，图片放在相关正文附近；由导出程序封装 ENEX 文件，不要自行生成 XML。'),

@@ -127,7 +127,7 @@ def test_health_and_frontend_are_served() -> None:
     client = TestClient(main.app)
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.0.0"
+    assert health.json()["version"] == launcher.VERSION
     assert health.json()["version"] == launcher.VERSION
     assert health.json()["service"] == "AI Video Note"
     assert health.json()["mode"] == "dev"  # 测试进程非打包；打包版应报 portable
@@ -157,7 +157,7 @@ def test_health_and_frontend_are_served() -> None:
     assert 'id="recentTaskList"' in page.text
     assert 'id="copyNoteBtn"' in page.text
     assert 'value="png"' in page.text
-    assert 'class="brand-mark" src="/icon.png?v=ai-video-note-1.0.0"' in page.text
+    assert f'class="brand-mark" src="/icon.png?v=ai-video-note-{launcher.VERSION}"' in page.text
     assert "记住 LLM 配置" not in page.text
     assert "default-src 'self'" in page.headers["content-security-policy"]
     favicon = client.get("/favicon.ico")

@@ -108,6 +108,10 @@ jobs:
           $version = (Select-String -Path launcher.py -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
           "VERSION=$version" >> $env:GITHUB_ENV
 
+      - name: Verify running-app uninstall and update preservation
+        shell: pwsh
+        run: .\scripts\verify_installer.ps1 -Installer ".\dist\AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe"
+
       - name: Upload Windows asset
         uses: actions/upload-artifact@v4
         with:

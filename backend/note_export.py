@@ -9,6 +9,7 @@ import re
 import shutil
 from urllib.parse import quote, unquote, urlsplit
 from markdown_it import MarkdownIt
+from .note_markdown import normalize_bold_spacing
 
 IMAGE = re.compile(r'(!\[[^\]]*\]\()(?:\./)?(?:frames|images)/([^)]+)\)')
 EXTENSIONS = {"markdown":"md","obsidian":"md","docx":"docx","html":"html","json":"json","txt":"txt","png":"png","pdf":"pdf","enex":"enex"}
@@ -44,6 +45,7 @@ def png_document(content, task_dir):
 
 def save_markdown_folder(title, content, task_dir, destination, created_files=None):
     """Export one independent title-named folder; leave source frames untouched."""
+    content = normalize_bold_spacing(content)
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', '_', str(title)).strip(' .')[:80].rstrip(' .') or 'note'
@@ -88,6 +90,7 @@ def save_markdown_folder(title, content, task_dir, destination, created_files=No
 
 
 def save_note_export(title,content,task_dir,destination,note_format,created_files=None):
+    content = normalize_bold_spacing(content)
     if note_format == 'markdown':
         return save_markdown_folder(title, content, task_dir, destination, created_files)
     task_dir=Path(task_dir);destination=Path(destination).resolve()

@@ -141,8 +141,11 @@ def try_operation(operation,source,*,max_height=None,frames_directory=None,times
                     output=(destination/image['file']).resolve()
                     if output.parent!=destination.resolve() or output.suffix!='.jpg' or not output.is_file():raise ValueError('Invalid GPU screenshot')
                 for image in result['images']:
-                    output=destination/image['file'];target=root/output.name
-                    output.replace(target);paths[float(image['time'])]=target
+                    from .screenshot_files import publish_frame
+                    output=destination/image['file']
+                    target=publish_frame(output,root,image['time'],task_id=root.parent.name,
+                        kind='ai_frame' if timestamps is not None else 'frame')
+                    paths[float(image['time'])]=target
                 value=paths if timestamps is not None else list(paths.values())
             message=f"视频{'压缩' if operation=='scale' else '截图'}已使用 GPU：{hardware.get('encoder') if operation=='scale' else hardware.get('decoder')}"
             if notes is not None:notes.append(message)

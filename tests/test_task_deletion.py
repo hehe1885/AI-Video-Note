@@ -6,6 +6,18 @@ from backend import main, obsidian_export
 from backend.video_processor import VideoProcessor
 from backend import audio_cache, video_cache
 from tests.media_fixture import make_audio, make_av_video
+from backend.task_cleanup import exported_files
+
+
+@pytest.mark.parametrize('length,recognized', [(12,True),(32,True),(13,False),(31,False),(33,False)])
+def test_obsidian_cleanup_recognizes_legacy_and_full_uuid_names(tmp_path, length, recognized):
+    token = 'a' * length
+    note = tmp_path / f'note-{token}.md'
+    image = tmp_path / f'video-{token}-1.jpg'
+    note.write_text(f'![shot]({image.name})', encoding='utf-8')
+    image.write_bytes(b'image')
+    files = exported_files(tmp_path/'workspace', 'task', {}, {'obsidian_path':str(note),'obsidian_files':[str(image)]})
+    assert files == ({note,image} if recognized else set())
 
 
 def setup(root, monkeypatch):

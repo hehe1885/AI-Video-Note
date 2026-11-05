@@ -53,12 +53,18 @@ english.DesktopShortcut=Create a desktop shortcut
 english.LaunchApp=Launch AI Video Note
 english.DataTitle=Your settings and models
 english.DataDescription=Updates preserve your personal data.
-english.DataBody=Configuration, account credentials, notes and models are stored in the workspace folder inside the installation directory, unless you choose a custom location in the app.%n%nThis installer only replaces program files. It does not include preinstalled models or personal data. Updates and uninstalling preserve the workspace and custom data folders.%n%nTo update, quit the app from its system tray menu and install the new version into the same directory.
+english.DataBody=Configuration, credentials, notes and models default to the workspace folder inside the installation directory.%n%nUpdates only replace program files and preserve configuration, credentials, notes, models and custom data folders.%n%nUninstalling exits this installation's background processes and deletes configuration, credentials, notes and models inside the installation directory. Custom folders outside it are preserved. Back up any data you need before uninstalling.
 chinesesimplified.DesktopShortcut=创建桌面快捷方式
 chinesesimplified.LaunchApp=启动 AI Video Note
 chinesesimplified.DataTitle=配置与模型的保存位置
 chinesesimplified.DataDescription=升级时保留你的个人数据。
-chinesesimplified.DataBody=配置、账号凭据、笔记和模型默认保存在安装目录内的 workspace 文件夹中；软件内自定义的目录按你的设置保存。%n%n安装包只替换程序文件，不包含预装模型或个人数据。升级和卸载均保留 workspace 及自定义数据目录。%n%n更新前请从系统托盘退出软件，并将新版本安装到相同目录。
+chinesesimplified.DataBody=配置、账号凭据、笔记和模型默认保存在安装目录内的 workspace 文件夹中；软件内自定义的目录按你的设置保存。%n%n升级只替换程序文件，保留配置、凭据、笔记、模型和自定义数据目录。%n%n卸载会退出本次安装的后台进程，并删除安装目录内的配置、凭据、笔记和模型。安装目录外的自定义数据保留。卸载前请自行备份需要的数据。
+english.UninstallFailure=Uninstall could not complete. Background processes or files may remain. Installation directory: %1%nLog: %2
+chinesesimplified.UninstallFailure=卸载未完成，后台进程或文件可能仍有残留。安装目录：%1%n日志：%2
+
+[Messages]
+english.ConfirmUninstall=Remove %1? Settings, credentials, notes and models inside the installation directory will also be deleted. Back up anything you need first. Updates preserve this data.
+chinesesimplified.ConfirmUninstall=确定卸载 %1 吗？安装目录内的设置、凭据、笔记和模型也会删除，请先备份需要的数据。更新安装会保留这些数据。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -69,6 +75,8 @@ Source: "{#AppExe}"; DestDir: "{app}"; DestName: "AI-Video-Note.exe"; Flags: ign
 Source: "{#ProjectRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectRoot}\README.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\scripts\uninstall_helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\scripts\install-owner.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\AI Video Note"; Filename: "{app}\AI-Video-Note.exe"; WorkingDir: "{app}"
@@ -77,7 +85,37 @@ Name: "{autodesktop}\AI Video Note"; Filename: "{app}\AI-Video-Note.exe"; Workin
 [Run]
 Filename: "{app}\AI-Video-Note.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+; Never recursively delete {app}; only the validated helper removes owned data.
+Type: dirifempty; Name: "{app}"
+
 [Code]
+var
+  UninstallHelper: String;
+
+procedure ExitUninstallProcess(Code: Integer);
+  external 'ExitProcess@kernel32.dll stdcall';
+
+procedure FailUninstall;
+begin
+  SuppressibleMsgBox(FmtMessage(CustomMessage('UninstallFailure'), [ExpandConstant('{app}'), ExpandConstant('{tmp}\ai-video-note-uninstall-helper.log')]), mbError, MB_OK, IDOK);
+  { Stop before showing a successful completion, including in silent mode. }
+  ExitUninstallProcess(2);
+end;
+
+procedure RunUninstallHelper(Action: String);
+var
+  Code: Integer;
+  Parameters: String;
+begin
+  Parameters := '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+    UninstallHelper + '" -Action ' + Action + ' -InstallDirectory "' + ExpandConstant('{app}') +
+    '" -LogPath "' + ExpandConstant('{tmp}\ai-video-note-uninstall-helper.log') + '"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
+    ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Code) then FailUninstall;
+  if Code <> 0 then FailUninstall;
+end;
+
 procedure InitializeWizard;
 begin
   CreateOutputMsgPage(wpSelectDir, CustomMessage('DataTitle'),
@@ -117,10 +155,18 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep <> usPostUninstall then Exit;
-  { The application writes from a 64-bit process; inspect both registry views. }
-  if IsWin64 then RemoveMatchingStartupEntries(HKCU64);
-  RemoveMatchingStartupEntries(HKCU32);
+  if CurUninstallStep = usUninstall then
+  begin
+    { This event runs only after the user confirms an actual uninstall. }
+    UninstallHelper := ExpandConstant('{tmp}\ai-video-note-uninstall-helper.ps1');
+    if not FileCopy(ExpandConstant('{app}\uninstall_helper.ps1'), UninstallHelper, False) then FailUninstall;
+    if IsWin64 then RemoveMatchingStartupEntries(HKCU64);
+    RemoveMatchingStartupEntries(HKCU32);
+    RunUninstallHelper('Prepare');
+  end;
+  if CurUninstallStep = usPostUninstall then
+  begin
+    RunUninstallHelper('Verify');
+    if DirExists(ExpandConstant('{app}')) then RemoveDir(ExpandConstant('{app}'));
+  end;
 end;
-
-{ No UninstallDelete or InstallDelete entries: user data is never removed. }

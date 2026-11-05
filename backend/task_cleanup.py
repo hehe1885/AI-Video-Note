@@ -49,7 +49,7 @@ def exported_files(workspace, task_id, manifest, result):
     note = result.get('obsidian_path')
     if note:
         note = Path(note).resolve()
-        token = re.search(r'-([0-9a-f]{12})\.md$', note.name)
+        token = re.search(r'-([0-9a-f]{12}|[0-9a-f]{32})\.md$', note.name)
         if token:
             paths.add(note)
             try:
@@ -64,7 +64,7 @@ def exported_files(workspace, task_id, manifest, result):
     for item in result.get('obsidian_files') or []:
         path = Path(item).resolve()
         note = result.get('obsidian_path')
-        token = re.search(r'-([0-9a-f]{12})\.md$', Path(note).name) if note else None
+        token = re.search(r'-([0-9a-f]{12}|[0-9a-f]{32})\.md$', Path(note).name) if note else None
         if token and re.fullmatch(r'video-' + token[1] + r'-\d+\.(?:jpg|jpeg|png|webp)', path.name, re.I):
             paths.add(path)
     return paths

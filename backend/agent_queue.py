@@ -131,6 +131,7 @@ async def prepare(task_id, request, title, info, segments, video_path=None, sour
     audio = Path(task.get("uploaded_filename") or "").suffix.lower() in {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus", ".wma"}
     wants_images = request.output != 'transcript' and not audio and (request.timed_screenshots or (request.screenshot_density or ("medium" if request.include_screenshots else "none")) != "none")
     if wants_images:
+        m.set_progress(task, 5, "准备配图视频", 45, "字幕已就绪，正在准备配图视频；网络无响应时会超时重试")
         try:
             if not video_path:
                 video_path = await asyncio.to_thread(m.reuse_preview_video, request, task_id, source_url or "")
@@ -453,6 +454,9 @@ async def _finish(m, task_id, body, data, manual):
     text = body.markdown.strip()
     if text.startswith(("```markdown\n", "```md\n")) and text.endswith("```"):
         text = text.split("\n", 1)[1][:-3].strip()
+    if settings.get('obsidian') and not settings.get('obsidian_properties', True):
+        from .note_options import strip_note_properties
+        text = strip_note_properties(text)
     position = resolve_commentary_position(settings.get("ai_commentary_position"), settings.get("ai_commentary", False), settings.get("summary_style", "faithful"))
     text = reposition_agent_commentary(text, position)
     summary = apply_timeline(text, settings.get("timeline_mode", "all"))
@@ -472,7 +476,10 @@ async def _finish(m, task_id, body, data, manual):
     screenshots = [task_dir / m.FRAMES_DIR_NAME / item["filename"] for item in shots]
     screenshots = [p for p in screenshots if p.is_file()]
     if settings.get("obsidian"):
-        summary = m.add_obsidian_properties(summary, data["title"], data.get("source_url"))
+        summary = m.add_obsidian_properties(summary, data["title"], data.get("source_url"),
+                                            enabled=settings.get('obsidian_properties', True))
+    from .note_markdown import normalize_bold_spacing
+    summary = normalize_bold_spacing(summary)
     await m._write_atomically(task_dir / "notes.md", (summary,))
     task['advisory'] = ''
     exports = await archive_outputs(

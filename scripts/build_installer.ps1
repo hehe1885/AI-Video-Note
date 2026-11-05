@@ -24,8 +24,10 @@ if (-not $ISCC) {
     }
 }
 if (-not $ISCC -or -not (Test-Path -LiteralPath $ISCC)) { throw 'Install Inno Setup 7 or 6, or pass -ISCC <path to ISCC.exe>.' }
+$ISCC = (Resolve-Path -LiteralPath $ISCC).Path
 if (-not $ChineseMessages) { $ChineseMessages = Join-Path (Split-Path -Parent $ISCC) 'Languages\ChineseSimplified.isl' }
 if (-not (Test-Path -LiteralPath $ChineseMessages)) { throw 'ChineseSimplified.isl is required. Pass -ChineseMessages <path> if it is not installed with Inno Setup.' }
+$ChineseMessages = (Resolve-Path -LiteralPath $ChineseMessages).Path
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build_exe.ps1') -Python $Python -SkipInstall:$SkipInstall
     if (-not $?) { throw 'Application build failed' }

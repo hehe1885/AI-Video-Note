@@ -29,7 +29,7 @@ from backend import update_check
 from backend.runtime_revision import CODE_REVISION
 from backend.update_check import GITHUB_LATEST_RELEASE_API, version_tuple
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_PORT = 8765
 PORT_SCAN_RANGE = 20
 START_TIMEOUT_SECONDS = 60
@@ -137,10 +137,16 @@ def start_server(port: int) -> tuple[Any, threading.Thread]:
         loop = asyncio.get_running_loop()
         server.request_shutdown = lambda: asyncio.run_coroutine_threadsafe(
             shutdown_application(lambda: setattr(server, "should_exit", True)), loop)
+        signal = None
         try:
+            if is_frozen():
+                from backend.install_lifecycle import listen_for_shutdown
+                signal = listen_for_shutdown(base_dir(), server.request_shutdown)
             await server.serve()
         finally:
             server.should_exit = True
+            if signal is not None:
+                signal.close()
     thread = threading.Thread(target=lambda: asyncio.run(serve()), daemon=True)
     thread.start()
     return server, thread

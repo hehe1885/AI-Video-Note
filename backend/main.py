@@ -165,7 +165,7 @@ NOTE_IMAGE_REF_RE = re.compile(
     rf"(!\[[^\]]*\]\()(?:\./)?(?:{FRAMES_DIR_NAME}|images)/([^)]+)\)"
 )
 
-app = FastAPI(title="AI Video Note API", version="1.0.0")
+app = FastAPI(title="AI Video Note API", version="1.0.1")
 
 
 def is_loopback_client(host: str | None) -> bool:
@@ -268,12 +268,15 @@ async def shutdown_application(callback):
     if model_downloads.thread is not None:
         await asyncio.to_thread(model_downloads.thread.join, 3)
     for task in tasks.values():
+        task['_cancel_requested'] = True
         event = task.get("_cancel_event")
         if event is not None:
             event.set()
-    for job in list(running_jobs.values()):
+    from . import agent_auto
+    managed_jobs = set(running_jobs.values()) | set(agent_auto.workers.values())
+    for job in managed_jobs:
         job.cancel()
-    pending_jobs = set(_active_transcriptions) | set(running_jobs.values())
+    pending_jobs = set(_active_transcriptions) | managed_jobs
     if pending_jobs:
         await asyncio.wait(pending_jobs, timeout=3)
     await asr_process.stop_workers()
@@ -600,6 +603,7 @@ class SummarizeRequest(AgentModelSettings):
     note_format: Literal["markdown", "obsidian", "docx", "html", "json", "txt", "png", "pdf", "enex"] = "markdown"
     obsidian_tags: bool = False
     obsidian_callouts: bool = False
+    obsidian_properties: bool = True
     custom_prompt: str = Field(default="", max_length=8000)
     note_save_directory: str = Field(default="", max_length=2048)
     obsidian: ObsidianExportPayload | None = None
@@ -957,6 +961,7 @@ def write_task_manifest(
         "generation_mode": request.generation_mode,
         "obsidian_tags": request.obsidian_tags,
         "obsidian_callouts": request.obsidian_callouts,
+        "obsidian_properties": request.obsidian_properties,
         "timeline_mode": request.timeline_mode,
         "text_detail": request.text_detail,
         "source_link_position": request.source_link_position,
@@ -2480,7 +2485,10 @@ def summary_style_label(style: str) -> str:
     }.get(style, style)
 
 
-def add_obsidian_properties(summary: str, title: str, source_url: str | None) -> str:
+def add_obsidian_properties(summary: str, title: str, source_url: str | None, enabled: bool = True) -> str:
+    if not enabled:
+        from .note_options import strip_note_properties
+        return strip_note_properties(summary)
     # JSON-quoted strings are valid YAML and safely handle colons, quotes and newlines.
     properties = ["---", f"title: {json.dumps(title, ensure_ascii=False)}",
                   f"source: {json.dumps(source_url or '', ensure_ascii=False)}",

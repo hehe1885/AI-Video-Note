@@ -18,6 +18,12 @@ def _apply_bilibili_metadata(runtime, task_id, info, outcome):
         runtime.update_task_manifest(task_id, info)
 
 async def process_video_task(runtime, task_id: str, request) -> None:
+    from .task_activity import watch_pipeline
+    async with watch_pipeline(runtime, task_id):
+        await _process_video_task(runtime, task_id, request)
+
+
+async def _process_video_task(runtime, task_id: str, request) -> None:
     task = runtime.tasks[task_id]
     task["status"] = "processing"
     runtime.persist_task_runtime(task_id)
@@ -64,7 +70,7 @@ async def process_video_task(runtime, task_id: str, request) -> None:
         )
         cookie = douyin_cookie if source_kind == runtime.VideoSource.DOUYIN else bili_cookie
         # Playback uses the same per-request credentials; secrets remain memory-only.
-        task['_review_audio_options'] = {'cookie': cookie}
+        task['_review_audio_options'] = {'cookie': cookie, 'whisper_model': request.whisper_model}
         transcript_result = runtime.load_transcript_result(resume_dir) if resume_dir else None
         if (transcript_result and source_kind == runtime.VideoSource.BILIBILI
                 and transcript_result.get('source') in {'bilibili_ai_subtitle', 'bilibili_multi_page', 'platform_subtitle', 'platform_auto_caption'}
@@ -600,6 +606,9 @@ async def process_video_task(runtime, task_id: str, request) -> None:
             cleaned = runtime.redact_secrets(warning, api_key)
             if cleaned not in task["logs"]:
                 task["logs"].append(cleaned)
+        if (request.summary_style == 'obsidian' or request.obsidian is not None) and not request.obsidian_properties:
+            from .note_options import strip_note_properties
+            summary = strip_note_properties(summary)
         summary = runtime.add_note_header_metadata(summary, title, info)
         if screenshot_points:
             summary = runtime.insert_screenshots(summary, screenshot_points, screenshot_frames)
@@ -614,8 +623,10 @@ async def process_video_task(runtime, task_id: str, request) -> None:
         )
         summary = runtime.apply_source_link(summary, source_url, request.source_link_position)
         if request.summary_style == "obsidian" or request.obsidian is not None:
-            summary = runtime.add_obsidian_properties(summary, title, source_url)
+            summary = runtime.add_obsidian_properties(summary, title, source_url, enabled=request.obsidian_properties)
 
+        from .note_markdown import normalize_bold_spacing
+        summary = normalize_bold_spacing(summary)
         task_dir = runtime.task_directory(task_id)
         await runtime._write_atomically(task_dir / "notes.md", (summary,))
         exports = await archive_outputs(

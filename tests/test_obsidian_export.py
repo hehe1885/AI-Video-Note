@@ -76,7 +76,8 @@ def test_invalid_obsidian_settings_rejected_before_task_creation(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attachment_mode", ["vault_root", "note_folder", "note_subfolder", "specified_folder"])
 @pytest.mark.parametrize("style", ["obsidian", "learning"])
-async def test_generated_obsidian_note_uses_custom_prompt_and_saves_to_vault(tmp_path, monkeypatch, attachment_mode, style):
+@pytest.mark.parametrize("properties", [True, False])
+async def test_generated_obsidian_note_uses_custom_prompt_and_saves_to_vault(tmp_path, monkeypatch, attachment_mode, style, properties):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     vault = tmp_path / "vault"
@@ -123,7 +124,7 @@ async def test_generated_obsidian_note_uses_custom_prompt_and_saves_to_vault(tmp
     monkeypatch.setattr(main, "tasks", {"test-obsidian": main.new_task()})
     (workspace / "test-obsidian").mkdir()
     request = main.SummarizeRequest(video_url="https://www.youtube.com/watch?v=abc",
-        summary_style=style, custom_prompt="添加复习问题", include_screenshots=True,
+        summary_style=style, custom_prompt="添加复习问题", include_screenshots=True, obsidian_properties=properties,
         obsidian={"vault": str(vault), "note_folder": "视频", "attachment_mode": attachment_mode},
         llm_config={"api_key": "fake-test-key"})
     await main.process_video_task("test-obsidian", request)
@@ -138,9 +139,9 @@ async def test_generated_obsidian_note_uses_custom_prompt_and_saves_to_vault(tmp
     path = Path(task["result"]["obsidian_path"])
     assert path.parent == vault / "视频"
     saved = path.read_text(encoding="utf-8")
-    assert saved.startswith('---\ntitle: "示例：视频"')
+    assert saved.startswith('---\ntitle: "示例：视频"') is properties
     assert "[[核心概念]]" in saved
-    assert "source:" in saved
+    assert ('source:' in saved) is properties
     image_ref = saved.split("![截图 · 00:02](", 1)[1].split(")", 1)[0]
     copied = (path.parent / unquote(image_ref)).resolve()
     assert copied.is_relative_to(vault)

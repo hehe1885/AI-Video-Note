@@ -8,9 +8,9 @@
          注意 hash 与 'unsafe-inline' 并存时后者会被忽略，必须整个替换。 -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
     <title>AI Video Note - 本地视频笔记</title>
-    <link rel="icon" href="/favicon.ico?v=ai-video-note-1.0.0">
+    <link rel="icon" href="/favicon.ico?v=ai-video-note-1.0.1">
     <script src="theme-bootstrap.js?v=20261011-2"></script>
-    <link rel="stylesheet" href="style.css?v=20261101-2">
+    <link rel="stylesheet" href="style.css?v=20261105-1">
     <link rel="stylesheet" href="vendor/katex/katex.min.css">
     <script src="vendor/marked-18.0.9.umd.js"></script>
     <script src="vendor/dompurify-3.4.13.min.js"></script>
@@ -22,9 +22,9 @@
 <div class="app-shell">
     <aside id="settingsSidebar" class="sidebar" aria-label="处理配置">
         <div class="brand">
-            <img class="brand-mark" src="/icon.png?v=ai-video-note-1.0.0" alt="" aria-hidden="true" width="40" height="40">
+            <img class="brand-mark" src="/icon.png?v=ai-video-note-1.0.1" alt="" aria-hidden="true" width="40" height="40">
             <div>
-                <h1>AI Video Note <span id="appVersion" class="app-version">v1.0.0</span></h1>
+                <h1>AI Video Note <span id="appVersion" class="app-version">v1.0.1</span></h1>
                 <p>个人视频及音频笔记工具</p>
             </div>
         </div>
@@ -603,10 +603,12 @@
                     <input id="obsidianAttachmentFolder" type="text" value="attachments" placeholder="例如 pictures" autocomplete="off">
                     <small id="obsidianAttachmentFolderHint">相对于笔记所在文件夹。</small>
                 </label>
-                <label class="field"><span><input id="obsidianTags" type="checkbox"> 添加标签</span><small>在笔记末尾添加主题标签，方便分类和查找。</small></label>
-                <label class="field"><span><input id="obsidianCallouts" type="checkbox"> 使用提示块</span><small>用提示框突出总结、操作提示或注意事项。</small></label>
+                <div class="obsidian-feature-options">
+                    <label class="field"><span><input id="obsidianTags" type="checkbox"> 添加标签</span><small>在笔记末尾添加主题标签，方便分类和查找。</small></label>
+                    <label class="field"><span><input id="obsidianCallouts" type="checkbox"> 使用提示块</span><small>用提示框突出总结、操作提示或注意事项。</small></label>
+                    <label class="field"><span><input id="obsidianProperties" type="checkbox" checked> 生成笔记属性</span><small>在笔记顶部添加 title、source 属性。</small></label>
+                </div>
                 <p id="obsidianPathPreview" class="model-path" aria-live="polite"></p>
-                <p class="section-note">图片会复制为独立附件，并自动使用相对路径引用。需要视频截图时，请选择「AI 配图」的疏密档位。这些设置会记住，不会修改 Obsidian 自身的配置。</p>
             </div>
             </div>
             </div>
@@ -837,6 +839,8 @@
         <div class="transcript-review-tools">
             <button id="transcriptReviewAiBtn" class="button ghost compact-button" type="button" aria-label="让AI校对字幕">✨ AI校对</button>
             <button id="transcriptReviewHighBtn" class="button ghost compact-button" type="button">采纳高可信建议</button>
+            <button id="transcriptReviewResolvedBtn" class="button ghost compact-button" type="button" hidden>查看已采纳项</button>
+            <button id="transcriptReviewAudioBtn" class="button ghost compact-button" type="button" title="使用本机语音识别和当前模型复核">核对存疑音频</button>
         </div>
         <div id="transcriptReviewItems" class="transcript-review-items"></div>
         <p id="transcriptReviewStatus" role="status" aria-live="polite"></p>
@@ -931,15 +935,15 @@
 </dialog>
 
 <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-<script src="locales/en.js?v=20261101-1"></script>
+<script src="locales/en.js?v=20261105-2"></script>
 <script src="i18n.js?v=20261019-1"></script>
 <script src="api.js?v=20261013-2"></script>
 <script src="tasks.js?v=20261031-2"></script>
-<script src="settings.js?v=20261021-4"></script>
+<script src="settings.js?v=20261105-1"></script>
 <script src="gpu-runtime.js?v=20261016-1"></script>
-<script src="script.js?v=20261101-1"></script>
+<script src="script.js?v=20261105-2"></script>
 <script src="date-picker.js?v=20261019-2"></script>
-<script src="transcript-review.js?v=20261018-2"></script>
+<script src="transcript-review.js?v=20261105-1"></script>
 <script src="note-view.js?v=20261031-2"></script>
 <script src="note-tools.js?v=20261019-1"></script>
 <script src="storage-tools.js?v=20261031-2"></script>

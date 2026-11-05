@@ -131,6 +131,13 @@ const descendants=root=>root.children.flatMap(child=>[child,...descendants(child
  nodes.get('transcriptReviewHighBtn').events.click();
  assert.equal(editors[0].value,'梯度下降');
  assert.equal(editors[1].value,'章三');
+ assert.equal(rows[0].hidden,true,'Bulk acceptance removes high-confidence cards from the pending list');
+ assert.equal(rows[1].hidden,false,'Uncertain cards stay visible');
+ assert.match(nodes.get('transcriptReviewStatus').textContent,/1/);
+ nodes.get('transcriptReviewResolvedBtn').events.click();
+ assert.equal(rows[0].hidden,false,'Accepted suggestions can be expanded and undone');
+ nodes.get('transcriptReviewResolvedBtn').events.click();
+ assert.equal(rows[0].hidden,true);
  editors[1].value='人工核实的人名';
  sandbox.response={...sandbox.response,revision:'proofread2'};
  run('fetchWithTimeout=async(url,options)=>{record(url,options);return options?.method==="POST"?{queued:false,revision:"proofread2"}:response};');
@@ -145,6 +152,38 @@ const descendants=root=>root.children.flatMap(child=>[child,...descendants(child
  sandbox.response={...sandbox.response,revision:'proofread3'};
  sandbox.window.syncTranscriptReview('review',{status:'processing',transcript_review:{status:'pending',revision:'proofread3'}}); await tick();
  assert.equal(nodes.get('transcriptReviewItems').querySelectorAll('textarea')[1].value,'人工核实的人名');
+ // Listening updates suggestions, never a manual edit or an already accepted decision.
+ run('fetchWithTimeout=async(url,options)=>{record(url,options);return {revision:response.revision,item:{...response.items[1],suggestion:"音频建议",confidence:.82,audio_review:{method:"local_asr_then_text_model",text:"独立音频识别"}}}};');
+ nodes.get('transcriptReviewAudioBtn').events.click(); await tick(); await tick();
+ const audioRequest=calls.at(-1);
+ assert.match(audioRequest[0],/seg-1\/audio-review$/,'Only unresolved low-confidence items are checked');
+ assert.equal(JSON.parse(audioRequest[1].body).revision,'proofread3');
+ editors=nodes.get('transcriptReviewItems').querySelectorAll('textarea');
+ assert.equal(editors[1].value,'人工核实的人名','Audio review preserves manual corrections');
+ assert.equal(nodes.get('transcriptReviewItems').children[0].hidden,true,'Audio review preserves accepted state');
+ assert.ok(descendants(nodes.get('transcriptReviewItems')).some(el=>el.textContent==='独立音频识别'));
+ assert.equal(nodes.get('transcriptReviewAudioBtn').disabled,false);
+ const audioCount=calls.length;
+ nodes.get('transcriptReviewAudioBtn').events.click(); await tick();
+ assert.equal(calls.length,audioCount,'Bulk audio check skips previously checked excerpts');
+ run('fetchWithTimeout=async(url,options)=>{record(url,options);return {confirmed:true}};');
+ nodes.get('transcriptReviewApplyBtn').events.click(); await tick();
+ assert.deepEqual(JSON.parse(calls.at(-1)[1].body).decisions,[
+  {id:'seg-0',text:'梯度下降'}, {id:'seg-1',text:'人工核实的人名'}
+ ],'Hidden accepted suggestions are included in the final commit');
+ // A custom edit must never be overwritten or hidden by a bulk acceptance.
+ sandbox.window.syncTranscriptReview('review',{status:'processing',transcript_review:{status:'pending',revision:'proofread3'}}); await tick();
+ // Restore GET behavior before the next independent review load.
+ sandbox.window.resetTranscriptReview();
+ sandbox.response={...sandbox.response,revision:'manual-edit'};
+ run('fetchWithTimeout=async(url,options)=>{record(url,options);return response};');
+ sandbox.window.syncTranscriptReview('review',{status:'processing',transcript_review:{status:'pending',revision:'manual-edit'}}); await tick();
+ editors=nodes.get('transcriptReviewItems').querySelectorAll('textarea');
+ editors[0].value='用户手动修正';
+ nodes.get('transcriptReviewHighBtn').events.click();
+ assert.equal(editors[0].value,'用户手动修正');
+ assert.equal(nodes.get('transcriptReviewItems').children[0].hidden,false);
+ console.log('Accepted cards collapse, can be restored, survive audio review and commit; custom edits stay intact');
  console.log('High/low confidence defaults, individual accept/restore, high-only bulk action and AI retry draft protection passed');
  console.log('Transcript popup, editable text, polling preservation, deferred review, save failures and stale task responses passed');
  console.log('Styled audio controls, accessible playback, seeking, mute, one excerpt at a time, dismissal guard and retry passed');

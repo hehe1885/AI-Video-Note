@@ -87,7 +87,7 @@ Download `AI-Video-Note-VERSION-Setup-x64.exe` from the repository's GitHub Rele
 
 The default location is `%LOCALAPPDATA%\Programs\AI Video Note`. Installation is per user and does not require administrator privileges. You can choose another writable folder. A Start menu entry is created, with an optional desktop shortcut.
 
-Settings, history, notes and models default to `workspace/` inside the installation folder. Before upgrading, quit through the system tray, then run the new installer and reuse the same folder. Only program files are replaced; the workspace and custom data folders are preserved during both updates and uninstalling.
+Settings, history, notes and models default to `workspace/` inside the installation folder. Before upgrading, quit through the system tray, then run the new installer and reuse the same folder. Updates replace only program files and preserve settings, credentials, notes, models and custom data folders. Uninstalling first exits this installation and its worker processes, then deletes program files and the workspace inside the installation directory. Back up data you need before uninstalling. Custom folders outside the installation are preserved. Remaining processes or files cause an explicit uninstall failure.
 
 ## Running the source on Windows
 
