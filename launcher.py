@@ -29,7 +29,7 @@ from backend import update_check
 from backend.runtime_revision import CODE_REVISION
 from backend.update_check import GITHUB_LATEST_RELEASE_API, version_tuple
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 DEFAULT_PORT = 8765
 PORT_SCAN_RANGE = 20
 START_TIMEOUT_SECONDS = 60

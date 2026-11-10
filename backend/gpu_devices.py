@@ -5,9 +5,11 @@ import ctypes as c
 import json
 import os
 import sys
+import subprocess
 import time
 from pathlib import Path
 from .whisper_vulkan import select_device
+from . import asr_diagnostics
 
 class ApplicationInfo(c.Structure):
     _fields_ = [('sType',c.c_uint32),('pNext',c.c_void_p),('pApplicationName',c.c_char_p),('applicationVersion',c.c_uint32),('pEngineName',c.c_char_p),('engineVersion',c.c_uint32),('apiVersion',c.c_uint32)]
@@ -105,26 +107,50 @@ async def probe_devices():
         _pending_probe = loop.create_task(_probe_devices())
     return await asyncio.shield(_pending_probe)
 
-async def _probe_devices():
-    global _cached_devices, _cached_at
-    if _cached_devices is not None and time.monotonic() - _cached_at < 15:
-        return list(_cached_devices)
-    command=[sys.executable,'--gpu-probe'] if getattr(sys,'frozen',False) else [sys.executable,'-m','backend.gpu_devices']
-    process=await asyncio.create_subprocess_exec(*command,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
-        cwd=Path(sys.executable).resolve().parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent.parent)
+async def _query_devices(cuda_only=False):
+    command = [sys.executable, '--gpu-probe'] if getattr(sys, 'frozen', False) else [sys.executable, '-m', 'backend.gpu_devices']
+    if cuda_only:
+        command.append('--cuda-only')
+    options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        cwd=Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent,
+        **options)
     try:
-        output,_=await asyncio.wait_for(process.communicate(),timeout=10)
-        devices=json.loads(output.decode('utf-8')) if process.returncode==0 else []
-        if not isinstance(devices,list):
-            devices=[]
-        _cached_devices, _cached_at = devices, time.monotonic()
-        return list(devices)
-    except (asyncio.TimeoutError,ValueError,OSError):
-        return []
+        output, errors = await asyncio.wait_for(process.communicate(), timeout=10)
+        if process.returncode:
+            detail = errors.decode('utf-8', 'replace').strip()[-300:]
+            raise RuntimeError(f'探测进程退出码 {process.returncode}：{detail}')
+        devices = json.loads(output.decode('utf-8'))
+        if not isinstance(devices, list) or any(not isinstance(d, dict) or not isinstance(d.get('name'), str) for d in devices):
+            raise ValueError('显卡探测返回格式无效')
+        return devices
     finally:
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+
+async def _probe_devices():
+    global _cached_devices, _cached_at
+    if _cached_devices is not None and time.monotonic() - _cached_at < 15:
+        return list(_cached_devices)
+    try:
+        devices = await _query_devices()
+    except (asyncio.TimeoutError, ValueError, OSError, RuntimeError) as error:
+        asr_diagnostics.emit(f'完整显卡探测未完成（{type(error).__name__}: {error}），正在单独复核 CUDA')
+        devices = []
+    if not devices and os.name == 'nt':
+        try:
+            devices = await _query_devices(cuda_only=True)
+            if devices:
+                asr_diagnostics.emit('独立 CUDA 探测已识别显卡：' + '、'.join(d['name'] for d in devices))
+        except (asyncio.TimeoutError, ValueError, OSError, RuntimeError) as error:
+            asr_diagnostics.emit(f'独立 CUDA 探测失败（{type(error).__name__}: {error}）')
+    # An empty/failed probe is transient, not proof that this computer has no GPU.
+    if devices:
+        _cached_devices, _cached_at = devices, time.monotonic()
+    return list(devices)
 
 
 def automatic_device(devices):
@@ -165,7 +191,7 @@ def child_main():
     if sys.stdout is None:
         sys.stdout = open(1,'w',encoding='utf-8',buffering=1,closefd=False)
     try:
-        devices=enumerate_devices()
+        devices=[] if '--cuda-only' in sys.argv else enumerate_devices()
     except (OSError,ValueError):
         devices=[]
     try:

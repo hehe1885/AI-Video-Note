@@ -160,11 +160,8 @@ const LEGACY_PROVIDER_MAP = {
 let currentTaskId = null;
 // Retain the task's materials until the user chooses a different source.
 let sourceTaskId = null;
+let sourceFilename = '';
 let currentTaskStatus = '';
-// 上传上限以本机后端 /api/health 下发为准；后端未就绪时按这个回退（与后端默认值一致）
-const DEFAULT_MAX_UPLOAD_MB = 2048;
-let maxUploadBytes = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;
-let maxUploadLabel = `${DEFAULT_MAX_UPLOAD_MB / 1024} GB`;
 let currentMarkdown = '';
 let currentHtml = '';
 // 后端下发的下载名（含视频标题与 B 站分 P 名），空串时回退成时间戳名
@@ -315,7 +312,6 @@ async function loadAppVersion() {
             const port = window.location.port ? ` · 端口 ${window.location.port}` : '';
             byId('appVersion').textContent = `v${data.version}${port}`;
         }
-        applyUploadLimit(data.max_upload_mb);
         const downloadDefault = byId('videoDownloadDefault');
         if (data.video_download_default_directory) {
             const path = document.createElement('span');
@@ -329,7 +325,6 @@ async function loadAppVersion() {
         applyMcpAccess(data.dependencies?.mcp_streamable_http ?? data.dependencies?.mcp_sse);
     } catch {
         // 保留 HTML 中的构建版本，服务短暂未就绪不影响页面使用。
-        applyUploadLimit(null);
     }
 }
 
@@ -371,16 +366,6 @@ async function copyTextToClipboard(text, successLabel) {
         } catch (error) {
             showToast(`复制失败：${error.message}`, 'error');
         }
-    }
-}
-
-function applyUploadLimit(maxUploadMb) {
-    const mb = Number(maxUploadMb) > 0 ? Math.floor(Number(maxUploadMb)) : DEFAULT_MAX_UPLOAD_MB;
-    maxUploadBytes = mb * 1024 * 1024;
-    maxUploadLabel = mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
-    const fileInfo = byId('fileInfo');
-    if (fileInfo) {
-        fileInfo.textContent = `支持 B 站/抖音等视频链接与最大 ${maxUploadLabel} 的本地视频`;
     }
 }
 
@@ -797,6 +782,8 @@ async function openRecentTask(taskId) {
         selectedView = taskViewSequence;
         currentTaskId = taskId;
         sourceTaskId = taskId;
+        sourceFilename = task.source_url ? '' : (task.uploaded_filename || '');
+        byId('localFile').value = '';
         if (task.generation_mode === "agent") {
             byId("generationMode").value = "agent";
             updateGenerationSettings();
@@ -1477,7 +1464,17 @@ function stopDouyinLoginPolling() {
     byId('douyinLoginBtn').disabled = false;
 }
 
+function renderHistoryFileName() {
+    const file = byId('localFile')?.files?.[0];
+    const name = isLocalSource() && !file && sourceTaskId === currentTaskId ? sourceFilename : '';
+    byId('fileField')?.classList?.toggle('has-history-file', Boolean(name));
+    const label = byId('localFileName');
+    if (label) { label.textContent = name; label.title = name; }
+    return name;
+}
+
 function updateFileInfo() {
+    const historyName = renderHistoryFileName();
     if (!isLocalSource()) {
         byId('fileInfo').textContent = '支持常见视频链接；平台字幕可用时优先读取';
         return;
@@ -1485,7 +1482,7 @@ function updateFileInfo() {
     const file = byId('localFile').files[0];
     byId('fileInfo').textContent = file
         ? `${file.name} · ${formatBytes(file.size)}`
-        : '支持常见视频格式，支持视频与 MP3、WAV、M4A、FLAC 等音频；单个文件不超过 2 GB'
+        : historyName || '支持常见视频格式及 MP3、WAV、M4A、FLAC 等音频；不限制文件大小'
 }
 
 function timedScreenshotEnabled() { return byId('timedScreenshots').checked; }
@@ -1888,7 +1885,10 @@ async function startSummary(options = {}) {
     const resumeTaskId = options.resumeCurrent ? currentTaskId : null;
     const selectedMode = selectedProcessingMode();
     const forceRestart = Boolean(options.forceRestart || (!resumeTaskId && selectedMode === 'restart'));
-    const request = validateAndBuildRequestBase(resumeTaskId);
+    const restartSourceId = forceRestart && currentTaskId && sourceTaskId === currentTaskId
+        && ['local', 'audio'].includes(byId('sourceType').value)
+        && !byId('localFile').files[0] ? currentTaskId : null;
+    const request = validateAndBuildRequestBase(resumeTaskId || restartSourceId);
     if (!request) return;
     // 所选 Whisper 模型未完整缓存时，先确认下载（新用户首次使用）。
     // 以下情况跳过确认：复用转录/续跑（不用 Whisper）、明显走平台字幕的提交
@@ -1935,6 +1935,7 @@ async function startSummary(options = {}) {
         updateBiliHint();
     }
 
+    const submissionFilename = request.file?.name || ((resumeTaskId || restartSourceId) ? sourceFilename : '');
     const submissionTaskId = currentTaskId;
     const submissionView = taskViewSequence;
     const ownsSubmissionView = () => submissionTaskId === currentTaskId && submissionView === taskViewSequence;
@@ -1947,8 +1948,9 @@ async function startSummary(options = {}) {
             videoUrl, uploadTaskId, resumeTaskId, forceRestart, request.transcriptOnly
         );
         config.generation_action = options.generationAction === 'continue' ? 'continue' : 'regenerate';
+        if (restartSourceId) config.source_task_id = restartSourceId;
 
-        if (['local', 'audio'].includes(request.sourceType) && !resumeTaskId) {
+        if (['local', 'audio'].includes(request.sourceType) && !resumeTaskId && !restartSourceId) {
             addLog(request.sourceType === 'audio' ? '正在上传音频' : '正在上传本地视频');
             // 仅转录不会走截图阶段，上传时就不必让后端保留视频轨
             const wantScreenshots = !request.transcriptOnly && screenshotsEnabled();
@@ -1977,6 +1979,8 @@ async function startSummary(options = {}) {
         resetTaskView();
         currentTaskId = data.task_id;
         sourceTaskId = data.task_id;
+        sourceFilename = submissionFilename;
+        updateFileInfo();
         setTranscriptTaskView(request.transcriptOnly);
         loadRecentTasks(true);
         if (data.reused_task_id) addLog(`已复用任务 ${data.reused_task_id} 的中间结果`, 'success');
@@ -2037,7 +2041,6 @@ function validateAndBuildRequestBase(resumeTaskId = null) {
         if (resumeTaskId) return { sourceType, file: null, videoUrl: '', modelConfig, transcriptOnly };
         if (!file) return validationError('请选择本地视频或音频文件');
         if (sourceType === 'audio' && !/\.(mp3|m4a|wav|flac|aac|ogg|opus|wma)$/i.test(file.name)) return validationError('请选择 MP3、M4A、WAV、FLAC、AAC、OGG、OPUS 或 WMA 音频文件');
-        if (file.size > maxUploadBytes) return validationError(`文件不能超过 ${maxUploadLabel}`);
         return { sourceType, file, videoUrl: '', modelConfig, transcriptOnly };
     }
 
@@ -2383,7 +2386,7 @@ async function saveLogRetention() {
         input.dataset.savedDays = String(data.days);
         if (status) status.textContent = '已保存';
     } catch (_error) {
-        input.value = input.dataset.savedDays || '3';
+        input.value = input.dataset.savedDays || '2';
         if (status) status.textContent = '保存日志设置失败，请重试';
     } finally { input.disabled = false; }
 }

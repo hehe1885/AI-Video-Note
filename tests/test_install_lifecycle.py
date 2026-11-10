@@ -15,8 +15,8 @@ WINDOWS = pytest.mark.skipif(sys.platform != 'win32', reason='Windows uninstalle
 
 
 def test_version_and_release_gate_agree():
-    assert launcher.VERSION == main.app.version == '1.0.1'
-    assert 'v1.0.1</span>' in (ROOT/'frontend/index.html').read_text(encoding='utf-8')
+    assert launcher.VERSION == main.app.version == '1.0.2'
+    assert 'v1.0.2</span>' in (ROOT/'frontend/index.html').read_text(encoding='utf-8')
     workflow = (ROOT/'.github/workflows/release.yml').read_text(encoding='utf-8')
     assert workflow.index('verify_installer.ps1') < workflow.index('- name: Upload Windows asset')
     source = (ROOT/'scripts/installer.iss').read_text(encoding='utf-8')

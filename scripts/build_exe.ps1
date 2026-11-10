@@ -128,7 +128,10 @@ $pyiArgs = @(
 )
 $pyiArgs += $vcAdd
 foreach ($distribution in @('fastapi','uvicorn','yt-dlp','yt-dlp-ejs','faster-whisper','sherpa-onnx','av','python-docx','reportlab')) {
-    $pyiArgs += @('--copy-metadata', $distribution)
+    # Explicit metadata staging excludes Python caches and local install provenance.
+    $metadata = (& $Python (Join-Path $PSScriptRoot 'stage_metadata.py') $distribution (Join-Path $projectRoot '.tmp\metadata')) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $metadata.path) { throw "Unable to stage metadata: $distribution" }
+    $pyiArgs += @('--add-data', ($metadata.path + ';' + $metadata.name))
 }
 $pyiArgs += @(
     "--collect-data", "faster_whisper",

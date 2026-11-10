@@ -16,7 +16,10 @@ def test_export_contains_complete_skill_and_no_workspace_secrets(tmp_path):
             '安装说明-Installation.txt', 'AI-Video-Note/startup.json'}
         assert archive.read('AI-Video-Note/SKILL.md') == (base/'skills/AI-Video-Note/SKILL.md').read_bytes()
         assert '自动启动软件后台服务' in archive.read('安装说明-Installation.txt').decode()
-    assert 'skills/AI-Video-Note;skills/AI-Video-Note' in (base/'scripts/build_exe.ps1').read_text(encoding='utf-8')
+    build = (base/'scripts/build_exe.ps1').read_text(encoding='utf-8')
+    assert 'skills/AI-Video-Note/SKILL.md;skills/AI-Video-Note' in build
+    assert 'skills/AI-Video-Note/scripts/video_note.py;skills/AI-Video-Note/scripts' in build
+    assert 'skills/AI-Video-Note;skills/AI-Video-Note' not in build
 
 
 def test_missing_packaged_skill_leaves_no_archive(tmp_path):

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .asr_prompt import title_prompt_mismatches_speech
+from . import asr_diagnostics
 from .asr_presets import decoding_options, preferred_cuda_compute_type
 from .asr_recovery import RETRY_DECODE_OPTIONS, record, retry_regions
 from .download import download_to_file
@@ -166,6 +167,7 @@ class WhisperTranscriber:
             raise TranscriptionCancelledError()
         model_to_load = self._preferred_model(model_name)
         gpu_known_bad = self._gpu_unusable
+        asr_diagnostics.emit(f'准备加载语音识别模型：{model_name}；请求设备 {"CUDA" if use_gpu else "CPU"}')
         load_started = time.monotonic()
         cache_key, device = self._ensure_model(
             WhisperModel, model_name, model_to_load, use_gpu, cancel_event,
@@ -179,6 +181,20 @@ class WhisperTranscriber:
         if use_gpu and not gpu_known_bad and device == "cpu":
             # 构造阶段就退回 CPU：这台机器的 GPU 用不了，本进程已经记下了
             fallback_note = GPU_UNAVAILABLE_NOTE
+        if use_gpu and device == "cpu":
+            asr_diagnostics.emit(fallback_note or 'CUDA 此前已不可用，本次直接使用 CPU')
+
+        def report_device():
+            loaded = self._models[cache_key]
+            native = getattr(loaded, 'model', loaded)
+            actual_device = str(getattr(native, 'device', device)).upper()
+            indices = getattr(native, 'device_index', None)
+            if actual_device == 'CUDA' and indices is not None:
+                actual_device += ':' + ','.join(map(str, indices)) if isinstance(indices, (list, tuple)) else ':' + str(indices)
+            precision = getattr(native, 'compute_type', None) or '未知'
+            asr_diagnostics.model_ready(self._actual_models.get(cache_key, model_to_load), actual_device, precision)
+
+        report_device()
         transcribe_started = time.monotonic()
         def decode():
             raw, info = self._run_model(self._models[cache_key], media_path, initial_prompt, device,
@@ -207,13 +223,16 @@ class WhisperTranscriber:
                 self._models.pop(cache_key, None)
                 self._actual_models.pop(cache_key, None)
                 self._gpu_unusable = True
+            asr_diagnostics.emit(f'CUDA 计算失败：{error}')
             if not allow_cpu_fallback:
                 raise CudaUnavailableError(str(error)) from error
             fallback_note = (
                 f"GPU 转写不可用（{error}）：已改用 CPU，本机后续任务不再尝试 GPU。"
                 "CUDA 12 / cuDNN 9 等依赖请在显卡加速设置中检查，按官方说明修复后重启程序。"
             )
+            asr_diagnostics.emit(fallback_note)
             cache_key, device = self._ensure_model(WhisperModel, model_name, model_to_load, False, cancel_event)
+            report_device()
             records, info = decode()
         def check_cancel():
             if cancel_event is not None and cancel_event.is_set():
@@ -240,6 +259,7 @@ class WhisperTranscriber:
             "language": info.language,
             "language_probability": info.language_probability,
             "device": device,
+            "compute_type": getattr(getattr(self._models[cache_key], 'model', self._models[cache_key]), 'compute_type', None),
             "model": self._actual_models.get(cache_key, model_name),
             "requested_model": model_name,
             "duration": float(info.duration or 0),
@@ -317,8 +337,10 @@ class WhisperTranscriber:
                 else:
                     # 记下来：本进程后续任务直接走 CPU，不再重付一次注定失败的 cuda 初始化
                     self._gpu_unusable = True
+                    asr_diagnostics.emit(f'CUDA 模型加载失败：{gpu_error}')
                     if not allow_cpu_fallback:
                         raise CudaUnavailableError(str(gpu_error)) from gpu_error
+                    asr_diagnostics.emit("CUDA 模型加载失败，准备改用 CPU")
                     device = "cpu"
                     cache_key = (model_name, device)
                     if cache_key not in self._models:

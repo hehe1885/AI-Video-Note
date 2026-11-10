@@ -116,9 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: |
-            dist/AI-Video-Note-${{ env.VERSION }}-portable.exe
-            dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe
+          path: dist/AI-Video-Note-${{ env.VERSION }}-Setup-x64.exe
           if-no-files-found: error
 
   publish:
@@ -145,5 +143,5 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "Release already exists; preserving its published notes and assets."
           else
-            gh release create "$GITHUB_REF_NAME" release-assets/* --notes-file .github/RELEASE_NOTES.md --title "AI Video Note $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" release-assets/*-Setup-x64.exe --notes-file .github/RELEASE_NOTES.md --title "AI Video Note $GITHUB_REF_NAME"
           fi

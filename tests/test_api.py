@@ -550,11 +550,11 @@ def test_summarize_rejects_upload_task_already_consumed_or_unknown(
     )
 
 
-def test_health_reports_upload_limit_for_the_frontend(monkeypatch) -> None:
-    """前端不再自己写死 500MB：本机上限只能由健康接口下发。"""
-    monkeypatch.setattr(main, "MAX_UPLOAD_MB", 1536)
+def test_health_reports_unlimited_local_uploads(monkeypatch) -> None:
+    # Legacy environment settings must not restore the removed upload cap.
+    monkeypatch.setenv("MAX_UPLOAD_MB", "2048")
     response = TestClient(main.app).get("/api/health")
-    assert response.json()["max_upload_mb"] == 1536
+    assert response.json()["max_upload_mb"] is None
 
 
 def test_summarize_accepts_douyin_url_and_does_not_front_reject(
@@ -1833,16 +1833,52 @@ async def test_cancel_during_llm_generation_marks_task_cancelled(
     assert task["step_name"] == "已取消"
 
 
-def test_upload_rejects_file_over_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_upload_streams_past_former_two_gib_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
-    client = TestClient(main.app)
-    response = client.post(
-        "/api/upload",
-        files={"file": ("big.mp4", b"x" * 200, "video/mp4")},
-    )
-    assert response.status_code == 413
-    assert "上限" in response.json()["detail"]
+    monkeypatch.setenv("MAX_UPLOAD_MB", "2048")
+    chunk = b"x" * (1024 * 1024)
+
+    class LargeUpload:
+        filename = "large.mp4"
+        remaining = 2049
+        closed = False
+
+        async def read(self, size):
+            assert size == len(chunk)
+            if not self.remaining:
+                return b""
+            self.remaining -= 1
+            return chunk
+
+        async def close(self):
+            self.closed = True
+
+    class CountingDestination:
+        written = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def write(self, data):
+            assert len(data) <= 1024 * 1024
+            self.written += len(data)
+
+    upload = LargeUpload()
+    destination = CountingDestination()
+    monkeypatch.setattr(main.aiofiles, "open", lambda *args, **kwargs: destination)
+    result = await main.upload_video(file=upload, include_screenshots="1", retain_media=True)
+    try:
+        assert destination.written == 2049 * 1024 * 1024
+        assert upload.closed
+        assert result["filename"] == "large.mp4"
+        assert main.tasks[result["task_id"]]["status"] == "uploaded"
+        assert (main.task_directory(result["task_id"]) / "task.json").is_file()
+    finally:
+        main.tasks.pop(result["task_id"], None)
 
 
 def test_upload_large_video_auto_extracts_audio(

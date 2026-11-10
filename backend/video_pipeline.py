@@ -18,9 +18,40 @@ def _apply_bilibili_metadata(runtime, task_id, info, outcome):
         runtime.update_task_manifest(task_id, info)
 
 async def process_video_task(runtime, task_id: str, request) -> None:
-    from .task_activity import watch_pipeline
-    async with watch_pipeline(runtime, task_id):
-        await _process_video_task(runtime, task_id, request)
+    import asyncio
+    import logging
+    from . import asr_diagnostics, detailed_logs
+    from .task_activity import emit, watch_pipeline
+    loop = asyncio.get_running_loop()
+
+    def record(message):
+        logging.getLogger('backend.asr').info(message)
+        emit(runtime, task_id, message, update_message=False)
+
+    def report(message):
+        # Inference threads must never mutate task state or persist manifests.
+        loop.call_soon_threadsafe(record, message)
+
+    with detailed_logs.bind(task_id, getattr(runtime, 'WORKSPACE_DIR', None)), asr_diagnostics.listen(report):
+        started = __import__('time').monotonic()
+        config = {key: getattr(request, key, None) for key in (
+            'whisper_model', 'use_gpu', 'gpu_backend', 'processing_mode', 'output', 'generation_mode', 'summary_style', 'note_format')}
+        detailed_logs.event('task.start', requested=config)
+        media = runtime.tasks[task_id].get('uploaded_file_path')
+        if media:
+            from pathlib import Path
+            try:
+                path = Path(media)
+                detailed_logs.event('media.input', suffix=path.suffix.lower(), bytes=path.stat().st_size)
+            except OSError as error:
+                detailed_logs.event('media.stat_failed', error=error)
+        try:
+            async with watch_pipeline(runtime, task_id):
+                await _process_video_task(runtime, task_id, request)
+        finally:
+            task = runtime.tasks.get(task_id, {})
+            detailed_logs.event('task.end', status=task.get('status'), stage=task.get('step_name'),
+                elapsed_seconds=round(__import__('time').monotonic()-started, 3))
 
 
 async def _process_video_task(runtime, task_id: str, request) -> None:
@@ -668,6 +699,8 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
             task["logs"].append("任务已取消；已生成的中间文件将保留")
         runtime.persist_task_runtime(task_id)
     except Exception as exc:
+        from . import detailed_logs
+        detailed_logs.event('task.error', stage=task.get('step_name'), error=exc, secrets=(used_api_key,))
         runtime.finish_task_timing(task)
         raw = str(exc)
         # 失败文案有三条出口（error 字段、任务日志、系统通知），未知异常时

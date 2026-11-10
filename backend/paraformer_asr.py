@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from .download import download_to_file
+from . import asr_diagnostics
 from .whisper_asr import TranscriptionCancelledError
 from .transcript import TranscriptSegment
 
@@ -211,6 +212,9 @@ class ParaformerTranscriber:
         started = time.monotonic()
         models = self._ensure_models(cancel_event)
         load_seconds = round(time.monotonic() - started, 1)
+        if use_gpu:
+            asr_diagnostics.emit('Paraformer 中文模型使用 CPU，不支持当前 GPU 加速后端')
+        asr_diagnostics.model_ready(model_name, 'CPU', 'int8')
         recognizer = models["recognizer"]
         punct = models["punct"]
 

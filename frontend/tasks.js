@@ -170,6 +170,8 @@ function resetTaskView() {
     whisperFallbackNotified = false;
     currentTaskId = null;
     sourceTaskId = null;
+    sourceFilename = '';
+    renderHistoryFileName();
     currentMarkdown = '';
     currentHtml = '';
     currentDownloadName = '';
@@ -351,7 +353,11 @@ function setSubmitButton(loading, label) {
 // 而它其实会拿新链接从头开始（只是文案不对，行为没错）。
 function resetSubmitLabel(sourceChanged = false) {
     if (isSubmitting || isTaskActive) return;
-    if (sourceChanged) sourceTaskId = null;
+    if (sourceChanged) {
+        sourceTaskId = null;
+        sourceFilename = '';
+        renderHistoryFileName();
+    }
     const reuseSource = Boolean(currentTaskId && sourceTaskId === currentTaskId);
     const continueGeneration = reuseSource && ['failed', 'cancelled'].includes(currentTaskStatus);
     if (continueGeneration) {

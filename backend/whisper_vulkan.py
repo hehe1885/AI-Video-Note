@@ -16,6 +16,7 @@ from filelock import FileLock, Timeout
 from pathlib import Path
 
 from .download import download_to_file
+from . import asr_diagnostics
 from .transcript import TranscriptSegment
 from .whisper_asr import TranscriptionCancelledError
 from .asr_policy import POLICY_VERSION, INDEPENDENT_TEXT_CONTEXT_MODELS, select_weight_precision, vulkan_decode_options
@@ -239,6 +240,8 @@ def _transcribe(root, media_path, model_name, backend, title, cancel_event, prog
         if not allow_cpu_fallback:
             raise RuntimeError('GPU-only 转写未检测到可用 Vulkan 显卡，禁止 CPU 回退')
         fallback = f'未检测到可用的 {backend.upper()} Vulkan 显卡，已使用 CPU 转写。请检查显卡驱动。'
+    if fallback:
+        asr_diagnostics.emit(fallback)
     precision=select_precision(model_name,selected)
     path = ensure_model(root, model_name, cancel_event) if precision=='float16' else ensure_model(root,model_name,cancel_event,precision=precision)
     precision_reason='memory_budget'
@@ -250,6 +253,7 @@ def _transcribe(root, media_path, model_name, backend, title, cancel_event, prog
     if not ctx and selected and precision=='float16':
         # Budget estimates can become stale while other apps allocate VRAM.
         # Retry smaller weights on the same GPU before considering any failure.
+        asr_diagnostics.emit('Vulkan FP16 模型显存分配失败，正在同一显卡上改用 Q8_0 精度')
         path=ensure_model(root,model_name,cancel_event,precision='q8_0')
         precision='q8_0';precision_reason='fp16_gpu_allocation_failed'
         ctx=native.lib.whisper_init_from_file_with_params(str(path).encode('utf-8'),params)
@@ -258,6 +262,7 @@ def _transcribe(root, media_path, model_name, backend, title, cancel_event, prog
     if not ctx:
         raise RuntimeError('语音识别模型无法加载，请检查模型完整性、内存及显卡驱动')
     try:
+        asr_diagnostics.model_ready(model_name, f'Vulkan · {selected["name"]}' if selected else 'CPU', precision)
         samples = decode_audio(str(media_path), sampling_rate=16000)
         duration = len(samples) / 16000
         if not len(samples):

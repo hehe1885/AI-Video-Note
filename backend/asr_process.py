@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .transcript import TranscriptSegment
+from . import asr_diagnostics, detailed_logs
 
 # 工人被取消后，主程序最多再等这么久就硬收
 CANCEL_GRACE_SECONDS = 60.0
@@ -97,9 +98,11 @@ async def run_in_child(
     cancel_event: Any = None,
     progress_callback: Callable[[float, float], None] | None = None,
     gpu_backend: str = "cuda",
+    resolved_backend: str | None = None,
 ) -> dict[str, Any]:
     """在工人进程里转写一个文件，事件照原样回传给主程序的回调。"""
     job = {
+        "task_id": detailed_logs.task_id(),
         "media_path": str(media_path),
         "model_name": model_name,
         "use_gpu": bool(use_gpu),
@@ -107,6 +110,8 @@ async def run_in_child(
     }
     if gpu_backend != "cuda":
         job["gpu_backend"] = gpu_backend
+    if resolved_backend is not None:
+        job['resolved_backend'] = resolved_backend
     process = await asyncio.create_subprocess_exec(
         *child_command(),
         cwd=Path(sys.executable).resolve().parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent.parent,
@@ -115,6 +120,7 @@ async def run_in_child(
         # stderr 不接管道：让它照原样进 _app.log，native 库的唠叨不会撑满管道把工人卡死
         stderr=None,
     )
+    detailed_logs.event('asr.worker_started', worker_pid=process.pid, model=model_name, use_gpu=use_gpu, requested_backend=gpu_backend, resolved_backend=resolved_backend)
     _active_workers.add(process)
     assert process.stdin and process.stdout
     writer = process.stdin
@@ -154,6 +160,10 @@ async def run_in_child(
                     progress_callback(
                         float(event.get("done") or 0.0), float(event.get("total") or 0.0)
                     )
+            elif kind == "diagnostic":
+                message = event.get("message")
+                if isinstance(message, str) and message.strip():
+                    asr_diagnostics.emit(message)
             elif kind == "cancelled":
                 cancelled = True
                 break
@@ -168,6 +178,7 @@ async def run_in_child(
         await asyncio.gather(cancel_task, return_exceptions=True)
 
     exit_code = await _reap(process, cancelled)
+    detailed_logs.event('asr.worker_exited', worker_pid=process.pid, exit_code=exit_code, cancelled=cancelled)
     _active_workers.discard(process)
     pump_task.cancel()
     await asyncio.gather(pump_task, return_exceptions=True)
@@ -299,21 +310,24 @@ def child_main() -> int:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        result = loop.run_until_complete(
-            run_transcription_local(
-                Path(str(job.get("media_path") or "")),
-                str(job.get("model_name") or "base"),
-                bool(job.get("use_gpu")),
-                job.get("title"),
-                cancel_event,
-                report,
-                **({"gpu_backend": job["gpu_backend"]} if job.get("gpu_backend") else {}),
+        with detailed_logs.bind(job.get('task_id')), asr_diagnostics.listen(lambda message: _emit({"event": "diagnostic", "message": message})):
+            result = loop.run_until_complete(
+                run_transcription_local(
+                    Path(str(job.get("media_path") or "")),
+                    str(job.get("model_name") or "base"),
+                    bool(job.get("use_gpu")),
+                    job.get("title"),
+                    cancel_event,
+                    report,
+                    **({"gpu_backend": job["gpu_backend"]} if job.get("gpu_backend") else {}),
+                    **({"resolved_backend": job['resolved_backend']} if job.get('resolved_backend') else {}),
+                )
             )
-        )
     except (TranscriptionCancelledError, asyncio.CancelledError):
         _emit({"event": "cancelled"})
         return 3
     except Exception as exc:
+        detailed_logs.event("asr.worker_error", task_id=job.get("task_id"), error=exc)
         _emit({"event": "error", "message": f"{type(exc).__name__}: {exc}"})
         return 1
     finally:

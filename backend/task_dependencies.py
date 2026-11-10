@@ -142,3 +142,22 @@ def preserve_reused_inputs(runtime, task_id: str) -> None:
         _record_input(runtime, other_id, source, target)
     for other_id, old_source, target in relocated:
         _record_input(runtime, other_id, old_source, target)
+
+
+def restart_input(runtime, task_id):
+    """Resolve a historical upload without reusing transcripts or generation state."""
+    try:
+        runtime.task_directory(task_id)  # Reject malformed or traversing IDs.
+        source, chain = _input_source(runtime, task_id, runtime.read_task_manifest)
+    except ValueError as error:
+        raise runtime.HTTPException(400, '历史任务标识无效') from error
+    if any(runtime.tasks.get(identifier, {}).get('_deleting') for identifier in chain):
+        raise runtime.HTTPException(409, '原任务正在删除，请稍后重试')
+    if source is None:
+        raise runtime.HTTPException(404, '历史任务的本地素材已不存在，请重新选择视频或音频文件')
+    return source
+
+
+def preserve_input(source, target):
+    """Create an independent input for a fresh task, preferring a hard link."""
+    _preserve(source, target)

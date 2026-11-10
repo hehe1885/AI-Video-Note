@@ -1945,3 +1945,12 @@ html { scrollbar-gutter: stable; }
 #storagePreviewFiles { max-height: 170px; overflow: auto; padding-left: 20px; font-size: 12px; }
 #storagePreviewFiles li { overflow-wrap: anywhere; margin-bottom: 6px; }
 #storageStatus { overflow-wrap: anywhere; }
+
+/* History uses the preserved upload, while the native chooser remains accessible. */
+.file-picker.has-history-file { position: relative; gap: 10px; min-width: 0; cursor: pointer; }
+.file-picker.has-history-file input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.file-picker.has-history-file > span { display: block; pointer-events: none; }
+.file-picker.has-history-file .history-file-button { flex: none; padding: 5px 10px; line-height: 20px; border: 1px solid var(--border); border-radius: var(--inner-radius); background: var(--surface); color: var(--text); }
+.file-picker.has-history-file #localFileName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
+.file-picker.has-history-file:has(input:disabled) { opacity: .65; cursor: default; }
+.file-picker.has-history-file input:disabled { cursor: default; }

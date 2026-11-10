@@ -6,10 +6,10 @@ from backend import log_retention, main
 
 
 def test_default_and_invalid_settings(tmp_path):
-    assert log_retention.load_days(tmp_path) == 3
+    assert log_retention.load_days(tmp_path) == 2
     for data in ('bad json', '{"days":true}', '{"days":0}', '{"days":366}'):
         (tmp_path / '_log_settings.json').write_text(data)
-        assert log_retention.load_days(tmp_path) == 3
+        assert log_retention.load_days(tmp_path) == 2
 
 
 def test_cleanup_boundary_and_preserves_unrelated_files(tmp_path):
@@ -67,7 +67,7 @@ def test_daily_rotation_restart_and_live_setting_cleanup(tmp_path, monkeypatch):
 def test_settings_api_persisted_and_validated(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'WORKSPACE_DIR', tmp_path)
     client = TestClient(main.app)
-    assert client.get('/api/log-settings').json() == {'days': 3}
+    assert client.get('/api/log-settings').json() == {'days': 2}
     assert client.put('/api/log-settings', json={'days': 7}).json() == {'days': 7}
     assert client.get('/api/log-settings').json() == {'days': 7}
     for value in (0, 366, 1.5, True, '5'):

@@ -6,7 +6,7 @@ import os
 import tempfile
 import threading
 
-DEFAULT_DAYS = 3
+DEFAULT_DAYS = 2
 _streams = {}
 _settings_lock = threading.Lock()
 
@@ -24,11 +24,12 @@ def clean_archives(workspace: Path, days: int, today: date | None = None) -> Non
     folder = workspace / 'logs'
     if folder.is_symlink():
         return
-    for path in folder.glob('app-????-??-??.log'):
+    paths = list(folder.glob('app-????-??-??.log')) + list(folder.glob('detail-????-??-??-*.jsonl'))
+    for path in paths:
         if path.is_symlink() or not path.is_file():
             continue
         try:
-            stamp = date.fromisoformat(path.stem[4:])
+            stamp = date.fromisoformat(path.name[7:17] if path.name.startswith('detail-') else path.stem[4:])
             if stamp < cutoff:
                 path.unlink()
         except (ValueError, OSError):

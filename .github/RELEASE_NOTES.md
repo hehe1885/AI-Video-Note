@@ -1,12 +1,16 @@
-# 1.0.1
+# 1.0.2
 
-- 修复卸载后后台进程继续运行、程序文件残留的问题；更新保留个人数据，卸载删除安装目录内的个人数据。
-- 卸载增加路径归属验证、子进程清理与完成后残留检查；发布前验证运行中卸载和更新保留数据。
-- 字幕高可信建议可批量采纳并收起；支持本机音频识别与模型复核，长流程增加阶段日志。
+- 本地视频和音频导入取消应用大小上限，保留分块写入。
+- 修复 GPU 自动探测和转写子进程设备选择，实时记录设备、精度及回退原因。
+- 增加后台结构化详细日志，网页保留简洁日志，默认保留 2 天并自动脱敏。
+- 修复历史本地任务从头重跑：复用原始素材并重新识别，处理期间显示文件名。
+- 修复正常取消任务后的异常日志。
 
-- Fix running background processes and program files remaining after uninstall. Updates preserve personal data; uninstall removes data inside the installation.
-- Add installation-scoped shutdown, worker cleanup and residual checks, with release-gated lifecycle verification.
-- Improve subtitle acceptance, audio evidence review and long-running stage logs.
+- Remove the application size cap for local media imports while retaining chunked writes.
+- Fix automatic GPU detection and worker routing; report device, precision and fallback immediately.
+- Add redacted structured background logs, retain concise web logs, and default to two-day retention.
+- Restart local history tasks from preserved media and keep the filename visible.
+- Handle normal transcription cancellation without spurious exception reports.
 
 ## 中文
 

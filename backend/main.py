@@ -92,9 +92,10 @@ from .video_processor import (
     normalize_video_input,
 )
 from .paraformer_asr import ParaformerTranscriber
-from .whisper_asr import WHISPER_MODEL_REPOS, WhisperTranscriber
+from .whisper_asr import WHISPER_MODEL_REPOS, WhisperTranscriber, TranscriptionCancelledError
 from . import whisper_vulkan
 from .gpu_devices import resolve_backend, preferred_vulkan_precision
+from . import asr_diagnostics, detailed_logs
 from .model_downloads import ModelDownloads
 from .environment import EnvironmentRepair, diagnose
 
@@ -121,8 +122,6 @@ TRANSCRIPTS_DIR_NAME = "transcripts"
 FRONTEND_DIR = BASE_DIR / "frontend"
 APP_ICON_PATH = BASE_DIR / "sources" / "icon.png"
 FAVICON_PATH = BASE_DIR / "sources" / "icon.ico"
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "2048"))
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 # 超过该体积的本地视频上传后自动提取音频（16kHz m4a）并删除原视频，
 # 保留与在线视频一致的轻量工作目录；勾选“视频截图”时保留原视频。
 LARGE_UPLOAD_EXTRACT_MB = int(os.getenv("LARGE_UPLOAD_EXTRACT_MB", "300"))
@@ -165,7 +164,8 @@ NOTE_IMAGE_REF_RE = re.compile(
     rf"(!\[[^\]]*\]\()(?:\./)?(?:{FRAMES_DIR_NAME}|images)/([^)]+)\)"
 )
 
-app = FastAPI(title="AI Video Note API", version="1.0.1")
+app = FastAPI(title="AI Video Note API", version="1.0.2")
+detailed_logs.startup(WORKSPACE_DIR, app.version)
 
 
 def is_loopback_client(host: str | None) -> bool:
@@ -383,6 +383,14 @@ def _transcription_finished(job: asyncio.Task[Any]) -> None:
         job.exception()
 
 
+async def _await_transcription(operation):
+    try:
+        return await operation
+    except TranscriptionCancelledError as error:
+        # Expected worker cancellation must remain asyncio cancellation when shielded.
+        raise asyncio.CancelledError('转写已取消') from error
+
+
 async def run_transcription(
     media_path: Path,
     model_name: str,
@@ -398,6 +406,10 @@ async def run_transcription(
     托盘和界面一起没，日志一个字都没留下），所以正式产物里的转写必须死在外头。
     """
     options = {"gpu_backend": gpu_backend} if use_gpu and gpu_backend != "cuda" else {}
+    if use_gpu and gpu_backend == 'auto':
+        # Resolve once in the server, reusing the same probe result as the UI.
+        options['resolved_backend'] = await resolve_backend('auto', model_name)
+        asr_diagnostics.emit(f"自动选择识别后端：{options['resolved_backend'].upper()}（主进程确认）")
     if asr_process.use_child_process() or options or os.environ.get("AI_VIDEO_NOTE_MANAGED_SERVER") == "1" or browser_sessions.on_empty is not None:
         operation = asr_process.run_in_child(
             media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
@@ -406,7 +418,7 @@ async def run_transcription(
         operation = run_transcription_local(
             media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
         )
-    job = asyncio.create_task(operation)
+    job = asyncio.create_task(_await_transcription(operation))
     _active_transcriptions.add(job)
     job.add_done_callback(_transcription_finished)
     # Cancellation can finish the UI task before its native worker stops. Keep tracking
@@ -421,6 +433,8 @@ async def _vulkan_or_cpu(media_path, model_name, backend, title, cancel_event, p
     except (RuntimeError, OSError) as error:
         if cancel_event is not None and cancel_event.is_set():
             raise asyncio.CancelledError("转写已取消") from error
+        message = f"Vulkan 加速未能启动，准备使用 CPU；请检查运行库和显卡驱动：{error}"
+        asr_diagnostics.emit(message)
         result = await transcriber.transcribe(media_path, model_name, False,
             initial_prompt=title, cancel_event=cancel_event, progress_callback=progress_callback)
         result["fallback_note"] = f"Vulkan 加速未能启动，已使用 CPU；请检查运行库和显卡驱动：{error}"
@@ -435,6 +449,7 @@ async def run_transcription_local(
     cancel_event: Any,
     progress_callback: Any = None,
     gpu_backend: str = "cuda",
+    resolved_backend: str | None = None,
 ) -> dict:
     """按所选模型路由转写引擎：paraformer-zh 走 sherpa-onnx，其余走 faster-whisper。
 
@@ -442,7 +457,7 @@ async def run_transcription_local(
     一次性出结果，且 RTF ≈ 0.05 本来就不需要心跳）。
     """
     if use_gpu and gpu_backend == "auto":
-        effective = await resolve_backend("auto", model_name)
+        effective = resolved_backend or await resolve_backend("auto", model_name)
         if effective == "cuda":
             from .whisper_asr import CudaUnavailableError
             try:
@@ -453,15 +468,18 @@ async def run_transcription_local(
                 if cancel_event is not None and cancel_event.is_set():
                     raise asyncio.CancelledError("转写已取消") from exc
                 if model_name in whisper_vulkan.MODELS:
-                    result = await _vulkan_or_cpu(media_path, model_name, "vulkan", title, cancel_event, progress_callback)
                     message = f"CUDA 不可用，自动改用 Vulkan：{exc}"
+                    asr_diagnostics.emit(message)
+                    result = await _vulkan_or_cpu(media_path, model_name, "vulkan", title, cancel_event, progress_callback)
                     result["fallback_note"] = message + (f"；{result['fallback_note']}" if result.get("fallback_note") else "")
                     return result
+                asr_diagnostics.emit(f"CUDA 不可用，准备使用 CPU：{exc}")
                 result = await transcriber.transcribe(media_path, model_name, False,
                     initial_prompt=title, cancel_event=cancel_event, progress_callback=progress_callback)
                 result["fallback_note"] = f"CUDA 不可用，此中文模型暂不支持 Vulkan，已使用 CPU：{exc}"
                 return result
         if effective == "cpu":
+            asr_diagnostics.emit('自动选择 CPU：该模型仅支持 CPU' if model_name == 'paraformer-zh' else '自动选择 CPU：未检测到可用的 GPU 后端')
             return await run_transcription_local(media_path, model_name, False, title, cancel_event, progress_callback)
         return await _vulkan_or_cpu(media_path, model_name, effective, title, cancel_event, progress_callback)
     if use_gpu and gpu_backend != "cuda":
@@ -493,7 +511,14 @@ def transcribe_progress_reporter(
         seconds = max(0, int(seconds))
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
+    last = [time.monotonic(), 0.0]
+
     def report(position: float, duration: float) -> None:
+        now = time.monotonic()
+        detailed_logs.event('asr.progress', task_id=task.get('_task_id') or detailed_logs.task_id(), model=model_name,
+            audio_seconds=position, duration_seconds=duration, interval_seconds=round(now-last[0], 3),
+            advanced_seconds=round(position-last[1], 3))
+        last[:] = [now, position]
         total = _clock(duration) if duration > 0 else "未知时长"
         message = (
             f"正在转写{page_label}音频（{model_name}）："
@@ -584,6 +609,7 @@ class SummarizeRequest(AgentModelSettings):
     video_url: str = ""
     upload_task_id: str | None = None
     resume_task_id: str | None = None
+    source_task_id: str | None = None
     processing_mode: Literal["reuse", "restart"] = "reuse"
     # transcript: ASR plus AI proofreading; no note generation
     output: Literal["note", "transcript"] = "note"
@@ -644,6 +670,7 @@ class TranscribeRequest(AgentModelSettings):
     video_url: str = ""
     upload_task_id: str | None = None
     resume_task_id: str | None = None
+    source_task_id: str | None = None
     processing_mode: Literal["reuse", "restart"] = "reuse"
     prefer_subtitles: bool = True
     whisper_model: str = "base"
@@ -684,6 +711,7 @@ def set_progress(
     # or completion. Do not let them overwrite the final/cancelling step or log.
     if task.get("status") in {"completed", "failed", "cancelled", "cancelling"} or task.get("_cancel_requested") or task.get("_deleting"):
         return
+    detailed_logs.progress(task, step, name, progress)
     task.update(step=step, step_name=name, progress=progress, progress_message=message)
     task["logs"].append(message)
     task_id = task.get("_task_id")
@@ -1059,6 +1087,12 @@ async def submit_video_task(
         if directory.exists() and not directory.is_dir():
             raise HTTPException(status_code=422, detail="视频下载位置必须是文件夹")
         request.video_download_directory = str(directory.resolve())
+    restart_media = None
+    if request.source_task_id:
+        if request.processing_mode != 'restart' or request.video_url or request.upload_task_id:
+            raise HTTPException(422, '历史本地素材重跑不能同时指定其他来源')
+        from .task_dependencies import restart_input
+        restart_media = restart_input(sys.modules[__name__], request.source_task_id)
     reused_task_id = request.resume_task_id
     if request.processing_mode == "restart":
         reused_task_id = None
@@ -1103,11 +1137,32 @@ async def submit_video_task(
                 video_processor.detect_source(request.video_url)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        elif not reused_task_id:
+        elif not reused_task_id and restart_media is None:
             raise HTTPException(status_code=422, detail="请提供视频链接、上传文件或可继续的任务")
         tasks[task_id] = new_task(task_id=task_id)
         task_directory(task_id).mkdir(parents=True, exist_ok=False)
 
+    if restart_media is not None:
+        from .task_dependencies import preserve_input
+        # Keep deletion guards aware of the source until this task owns its input.
+        tasks[task_id]['uploaded_file_path'] = str(restart_media)
+        target = task_directory(task_id) / ('input' + restart_media.suffix)
+        copier = asyncio.create_task(asyncio.to_thread(preserve_input, restart_media, target))
+        try:
+            try:
+                await asyncio.shield(copier)
+            except asyncio.CancelledError:
+                await copier
+                raise
+            tasks[task_id]['uploaded_file_path'] = str(target)
+            old = tasks.get(request.source_task_id, {})
+            saved = read_task_manifest(request.source_task_id)
+            tasks[task_id]['uploaded_filename'] = old.get('uploaded_filename') or saved.get('uploaded_filename') or target.name
+            tasks[task_id]['logs'].append('已使用历史任务的本地原始素材；从头识别，不复用旧字幕或笔记')
+        except BaseException:
+            tasks.pop(task_id, None)
+            shutil.rmtree(task_directory(task_id), ignore_errors=True)
+            raise
     tasks[task_id]["resume_task_id"] = reused_task_id
     tasks[task_id]["output"] = request.output
     tasks[task_id]["_origin"] = origin
@@ -1629,8 +1684,8 @@ async def health_check() -> dict[str, Any]:
         "mode": "portable" if getattr(sys, "frozen", False) else "dev",
         # 本机保存的 API Key 是加密还是明文回退，答疑时看一眼健康接口即可确认
         "llm_key_storage": secret_box.storage_backend(),
-        # 前端上传上限跟随本机配置，不再自己写死一个数字
-        "max_upload_mb": MAX_UPLOAD_MB,
+        # 保留健康接口字段；null 表示本地媒体上传不限大小
+        "max_upload_mb": None,  # Local media uploads have no application size cap.
         "video_download_default_directory": str(WORKSPACE_DIR / "video"),
         "dependencies": {
             "yt_dlp": importlib.util.find_spec("yt_dlp") is not None,
@@ -1962,11 +2017,6 @@ async def upload_video(
         async with aiofiles.open(file_path, "wb") as destination:
             while chunk := await file.read(1024 * 1024):
                 written += len(chunk)
-                if written > MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"上传文件超过大小限制（上限 {MAX_UPLOAD_MB} MB）",
-                    )
                 await destination.write(chunk)
     except Exception:
         shutil.rmtree(task_dir, ignore_errors=True)
@@ -2068,6 +2118,7 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
     if cancel_event is not None:
         cancel_event.set()
     task.update(status="cancelling", step_name="取消中", error=None)
+    detailed_logs.event("task.cancel_requested", workspace=WORKSPACE_DIR, task_id=task_id)
     task["logs"].append("已收到取消请求；正在尽快停止当前步骤")
     persist_task_runtime(task_id)
     if first_request:
