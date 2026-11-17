@@ -183,6 +183,74 @@ const descendants=root=>root.children.flatMap(child=>[child,...descendants(child
  nodes.get('transcriptReviewHighBtn').events.click();
  assert.equal(editors[0].value,'用户手动修正');
  assert.equal(nodes.get('transcriptReviewItems').children[0].hidden,false);
+ // Concurrent tasks serialize subtitle confirmation strictly in FIFO order:
+ // task 2 never pops up while task 1 is unsubmitted (even if deferred or switched away).
+ sandbox.window.resetTranscriptReview();
+ const queuedResponses={
+  'q1':{status:'pending',revision:'rq1',manual_check:false,items:[{id:'q1-0',segment_index:0,start:0,end:5,original:'视频一原字幕',suggestion:'视频一修正',confidence:.95,reason:'check'}],next_offset:null},
+  'q2':{status:'pending',revision:'rq2',manual_check:false,items:[{id:'q2-0',segment_index:0,start:0,end:5,original:'视频二原字幕',suggestion:'视频二修正',confidence:.95,reason:'check'}],next_offset:null}
+ };
+ const reviewCalls=[];
+ run('fetchWithTimeout=async(url,options)=>{record(url,options);const m=url.match(/\\/task\\/([^/]+)\\/transcript-review/);if(options?.method==="POST"){return {confirmed:true};}return queuedResponses[m[1]];};');
+ sandbox.queuedResponses=queuedResponses;
+ run('queuedResponses=globalThis.queuedResponses');
+ const qBefore=calls.length;
+ sandbox.window.syncTranscriptReviewBatch([
+  {task_id:'q1',status:'processing',title:'第一个视频',created_at:'2026-11-16T10:00:00Z',transcript_review:{status:'pending',revision:'rq1'}},
+  {task_id:'q2',status:'processing',title:'第二个视频',created_at:'2026-11-16T10:01:00Z',transcript_review:{status:'pending',revision:'rq2'}}
+ ],{prune:true});
+ await tick();
+ assert.equal(nodes.get('transcriptReviewModal').hidden,false,'Head task pops up first');
+ assert.equal(nodes.get('transcriptReviewTaskName').textContent,'第一个视频');
+ assert.equal(nodes.get('transcriptReviewQueueHint').hidden,false);
+ assert.match(nodes.get('transcriptReviewQueueHint').textContent,/1/);
+ assert.equal(nodes.get('transcriptReviewItems').querySelector('textarea').value,'视频一修正');
+ // Deferring head task keeps it at head and blocks task 2 from popping up.
+ nodes.get('transcriptReviewLaterBtn').events.click();
+ await tick();
+ assert.equal(nodes.get('transcriptReviewModal').hidden,true);
+ // Switching main view to task 2 and syncing task 2 must NOT pop up task 2 while task 1 is unsubmitted.
+ run('currentTaskId="q2";');
+ sandbox.window.syncTranscriptReview('q2',{status:'processing',title:'第二个视频',transcript_review:{status:'pending',revision:'rq2'}});
+ await tick();
+ assert.equal(nodes.get('transcriptReviewModal').hidden,true,'Second video must stay queued until first review is submitted');
+ assert.equal(nodes.get('networkState').textContent,'排队等待核对字幕');
+ assert.equal(nodes.get('transcriptReviewNotice').hidden,false);
+ assert.match(nodes.get('transcriptReviewNoticeText').textContent,/第一个视频/);
+ // Re-open deferred head (first video) and submit it -> second video pops up automatically.
+ nodes.get('openTranscriptReviewBtn').events.click();
+ await tick();
+ assert.equal(nodes.get('transcriptReviewModal').hidden,false);
+ assert.equal(nodes.get('transcriptReviewTaskName').textContent,'第一个视频');
+ nodes.get('transcriptReviewKeepBtn').events.click();
+ await tick(); await tick();
+ const postUrls=calls.slice(qBefore).filter(([,opts])=>opts?.method==='POST').map(([u])=>u);
+ assert.equal(postUrls.at(-1),'/api/task/q1/transcript-review');
+ assert.equal(nodes.get('transcriptReviewModal').hidden,false,'Second video pops up immediately after first is submitted');
+ assert.equal(nodes.get('transcriptReviewTaskName').textContent,'第二个视频');
+ assert.equal(nodes.get('transcriptReviewQueueHint').hidden,true);
+ assert.equal(nodes.get('transcriptReviewItems').querySelector('textarea').value,'视频二修正');
+ nodes.get('transcriptReviewKeepBtn').events.click();
+ await tick(); await tick();
+ const postUrlsAfter=calls.slice(qBefore).filter(([,opts])=>opts?.method==='POST').map(([u])=>u);
+ assert.equal(postUrlsAfter.at(-1),'/api/task/q2/transcript-review');
+ assert.equal(nodes.get('transcriptReviewModal').hidden,true);
+ assert.equal(nodes.get('transcriptReviewNotice').hidden,true);
+ // Next in line follows submission order (created_at), not the order tasks were discovered,
+ // and the header shows a title even when the single-task poll payload has none.
+ sandbox.window.resetTranscriptReview();
+ queuedResponses.q3={status:'pending',revision:'rq3',manual_check:false,items:[{id:'q3-0',segment_index:0,start:0,end:5,original:'视频三原字幕',suggestion:'视频三修正',confidence:.95,reason:'check'}],next_offset:null};
+ run('currentTaskId="elsewhere"');
+ sandbox.window.syncTranscriptReviewBatch([{task_id:'q1',status:'processing',title:'第一个视频',created_at:'2026-11-16T10:00:00Z',transcript_review:{status:'pending',revision:'rq1'}}],{prune:false});
+ await tick();
+ assert.equal(nodes.get('transcriptReviewTaskName').textContent,'第一个视频');
+ run("activeTasksMap.set('q3',{task_id:'q3',status:'processing',title:'第三个视频'});activeTasksMap.set('q2',{task_id:'q2',status:'processing',title:'第二个视频'});");
+ sandbox.window.syncTranscriptReview('q3',{status:'processing',created_at:'2026-11-16T10:03:00Z',transcript_review:{status:'pending',revision:'rq3'}});
+ sandbox.window.syncTranscriptReview('q2',{status:'processing',created_at:'2026-11-16T10:01:00Z',transcript_review:{status:'pending',revision:'rq2'}});
+ nodes.get('transcriptReviewKeepBtn').events.click();
+ await tick(); await tick();
+ assert.equal(nodes.get('transcriptReviewTaskName').textContent,'第二个视频','Earlier submission is reviewed first and keeps a readable title');
+ sandbox.window.resetTranscriptReview();
  console.log('Accepted cards collapse, can be restored, survive audio review and commit; custom edits stay intact');
  console.log('High/low confidence defaults, individual accept/restore, high-only bulk action and AI retry draft protection passed');
  console.log('Transcript popup, editable text, polling preservation, deferred review, save failures and stale task responses passed');

@@ -14,6 +14,13 @@ def _stamp(value):
         return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except (ValueError, TypeError): return datetime.min.replace(tzinfo=timezone.utc)
 
+def _safe_review(review):
+    if not isinstance(review, dict):
+        return None
+    cleaned = {key: review[key] for key in ('status', 'revision', 'manual_check', 'count') if key in review}
+    return cleaned or None
+
+
 def collect_history(workspace, memory, q, status, output, start_date, end_date, utc_offset):
     records = {}
     try: directories = task_storage.directories(workspace)
@@ -23,21 +30,42 @@ def collect_history(workspace, memory, q, status, output, start_date, end_date, 
         if not manifest: continue
         saved = manifest.get('runtime') if isinstance(manifest.get('runtime'), dict) else {}
         result = saved.get('result') if isinstance(saved.get('result'), dict) else {}
+        resolved_status = recovered_status(directory, manifest)
+        review = _safe_review(saved.get('transcript_review'))
+        if review and review.get('status') == 'pending' and resolved_status not in {'processing', 'awaiting_agent'}:
+            review = None
+        source_url = str(manifest.get('source_url') or '')
         records[directory.name] = {
-            'task_id': directory.name, 'status': recovered_status(directory, manifest),
+            'task_id': directory.name, 'status': resolved_status,
             'step_name': str(saved.get('step_name') or ''), 'progress': int(safe_number(saved.get('progress'))),
             'output': manifest.get('output') or 'note',
             'title': result.get('title') or manifest.get('title') or manifest.get('uploaded_filename') or manifest.get('source_url') or '本地媒体任务',
+            'source_url': source_url if source_url.startswith(('http://', 'https://')) else None,
+            'uploaded_filename': manifest.get('uploaded_filename') or None,
             'created_at': saved.get('created_at') or manifest.get('created_at'),
             'finished_at': saved.get('finished_at'), 'elapsed_seconds': _number(saved.get('elapsed_seconds')),
+            'transcript_review': review,
+            'agent_auto_running': False,
         }
     for task in memory:
         if task.pop('_deleting', False):
             records.pop(task['task_id'], None)
             continue
         previous = records.get(task['task_id'], {})
-        records[task['task_id']] = {'output': 'note', **previous, **{k:v for k,v in task.items() if v is not None}}
-        if not task.get('title'): records[task['task_id']]['title'] = previous.get('title') or '本地媒体任务'
+        merged = {'output': 'note', **previous, **{k: v for k, v in task.items() if v is not None}}
+        if 'transcript_review' in task:
+            merged['transcript_review'] = task['transcript_review']
+        if 'finished_at' in task:
+            merged['finished_at'] = task['finished_at']
+        if (
+            isinstance(merged.get('transcript_review'), dict)
+            and merged['transcript_review'].get('status') == 'pending'
+            and merged.get('status') not in {'processing', 'awaiting_agent'}
+        ):
+            merged['transcript_review'] = None
+        if not task.get('title'):
+            merged['title'] = previous.get('title') or '本地媒体任务'
+        records[task['task_id']] = merged
     local_zone = timezone(timedelta(minutes=utc_offset))
     def matches(row):
         if q and q.casefold() not in str(row['title']).casefold(): return False
@@ -68,9 +96,13 @@ async def query_history(runtime, q='', status='', output='', start_date='', end_
         memory.append({'task_id': task_id, 'status': task.get('status'), 'step_name': task.get('step_name'),
             'progress': task.get('progress', 0), 'title': result.get('title'), 'output': task.get('output'),
             'created_at': task.get('created_at'), 'finished_at': task.get('finished_at'),
-            'elapsed_seconds': runtime.task_elapsed_seconds(task), '_deleting': task.get('_deleting', False)})
+            'elapsed_seconds': runtime.task_elapsed_seconds(task), '_deleting': task.get('_deleting', False),
+            'transcript_review': _safe_review(task.get('transcript_review')),
+            'agent_auto_running': bool(task.get('_agent_auto_running'))})
     rows = await runtime.asyncio.to_thread(collect_history, runtime.WORKSPACE_DIR, memory,
         q.strip(), status, output, first, last, utc_offset)
     page = rows[offset:offset + limit]
+    limit_value = min(3, max(1, int(getattr(runtime, 'MAX_CONCURRENT_TASKS', 3))))
     return {'tasks': page, 'total': len(rows), 'offset': offset, 'limit': limit,
-            'has_more': offset + len(page) < len(rows), 'next_offset': offset + len(page)}
+            'has_more': offset + len(page) < len(rows), 'next_offset': offset + len(page),
+            'max_concurrent_tasks': limit_value}

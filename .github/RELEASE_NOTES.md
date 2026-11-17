@@ -1,16 +1,14 @@
-# 1.0.2
+# 1.0.3
 
-- 本地视频和音频导入取消应用大小上限，保留分块写入。
-- 修复 GPU 自动探测和转写子进程设备选择，实时记录设备、精度及回退原因。
-- 增加后台结构化详细日志，网页保留简洁日志，默认保留 2 天并自动脱敏。
-- 修复历史本地任务从头重跑：复用原始素材并重新识别，处理期间显示文件名。
-- 修复正常取消任务后的异常日志。
+- 支持同一页面最多同时提交并处理 3 个笔记任务（`MAX_CONCURRENT_TASKS`，范围 1～3），可在「历史任务」中切换查看任一任务进度并随时取消。
+- 新增本地语音转写槽位串行控制（`MAX_CONCURRENT_ASR`，默认 1），多任务并发时避免本地 GPU 显存与内存争抢；多任务需核对字幕时按提交顺序排队弹窗。
+- 修复任务取消、异常状态同步、Agent 自动托管竞态及字幕校对弹窗清理等稳定性问题。
+- 优化「历史任务」列表默认高度为 3 条展示，超出部分下滑浏览。
 
-- Remove the application size cap for local media imports while retaining chunked writes.
-- Fix automatic GPU detection and worker routing; report device, precision and fallback immediately.
-- Add redacted structured background logs, retain concise web logs, and default to two-day retention.
-- Restart local history tasks from preserved media and keep the filename visible.
-- Handle normal transcription cancellation without spurious exception reports.
+- Support up to 3 concurrent note tasks per page (`MAX_CONCURRENT_TASKS`, range 1–3), switch between tasks in History to inspect live progress, and cancel running tasks inline.
+- Serialize local speech transcription workers via `MAX_CONCURRENT_ASR` (default 1) to avoid GPU/RAM contention, and queue pending subtitle reviews strictly in submission order.
+- Fix stability issues around task cancellation, state polling, Agent auto-processing races, and subtitle review modal cleanup.
+- Adjust the Recent History list height to show 3 items by default with smooth scrolling for more.
 
 ## 中文
 

@@ -535,6 +535,29 @@ input[type="checkbox"] {
 
 .source-controls { display: grid; grid-template-columns: 140px minmax(200px, 1fr) auto; gap: 10px; align-items: end; }
 .source-controls .field { margin: 0; }
+.source-url-wrap { position: relative; display: flex; align-items: center; }
+.source-url-wrap input { width: 100%; box-sizing: border-box; padding-right: 42px; }
+.source-clear-btn {
+    position: absolute;
+    right: 8px;
+    z-index: 2;
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+}
+.source-clear-btn:hover:not(:disabled) { color: var(--text); background: var(--surface-raised); }
+.source-clear-btn:disabled { opacity: .45; cursor: not-allowed; }
+.source-clear-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .file-picker {
     min-height: 40px;
     display: flex;
@@ -555,7 +578,7 @@ input[type="checkbox"] {
 .recent-heading { margin-bottom: 12px; }
 .compact-button { min-height: 32px; padding: 5px 10px; font-size: calc(12px * var(--ui-font-scale, 1)); }
 .recent-task-list {
-    max-height: min(360px, 45vh);
+    max-height: var(--recent-task-list-max-height, calc(106px + 99px * var(--ui-font-scale, 1)));
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
@@ -575,22 +598,45 @@ input[type="checkbox"] {
     color: var(--text);
     text-align: left;
 }
-.recent-task-delete { width: 38px; min-height: 38px; align-self: center; display: grid; place-items: center; border: 0; background: transparent; color: var(--text-muted); }
-.recent-task-delete:hover { color: var(--red); background: var(--red-soft); }
-.recent-task-delete:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
-.recent-task-delete svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.recent-task-delete, .recent-task-cancel { width: 38px; min-height: 38px; align-self: center; display: grid; place-items: center; border: 0; background: transparent; color: var(--text-muted); }
+.recent-task-delete:hover, .recent-task-cancel:hover:not(:disabled) { color: var(--red); background: var(--red-soft); }
+.recent-task-cancel:disabled { opacity: .45; cursor: not-allowed; }
+.recent-task-delete:focus-visible, .recent-task-cancel:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
+.recent-task-delete svg, .recent-task-cancel svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .recent-task-item:hover { background: var(--surface-raised); }
 .recent-task-item:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .recent-task-text { min-width: 0; display: grid; gap: 4px; }
-.recent-task-text strong { overflow: hidden; font-size: calc(13px * var(--ui-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
-.recent-task-kind { display: inline-block; margin-right: 6px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font-size: calc(10px * var(--ui-font-scale, 1)); font-weight: 700; }
-.recent-task-text span { color: var(--text-muted); font-size: calc(11px * var(--ui-font-scale, 1)); }
+.recent-task-text strong { overflow: hidden; font-size: calc(13px * var(--ui-font-scale, 1)); line-height: calc(18px * var(--ui-font-scale, 1) + 1px); text-overflow: ellipsis; white-space: nowrap; }
+.recent-task-kind { display: inline-block; margin-right: 6px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font-size: calc(10px * var(--ui-font-scale, 1)); line-height: calc(13px * var(--ui-font-scale, 1)); font-weight: 700; vertical-align: middle; }
+.recent-task-text > span { color: var(--text-muted); font-size: calc(11px * var(--ui-font-scale, 1)); line-height: calc(15px * var(--ui-font-scale, 1)); }
 .recent-task-status { min-width: 54px; font-size: calc(11px * var(--ui-font-scale, 1)); font-style: normal; text-align: right; }
 .recent-task-status.completed { color: var(--green); }
 .recent-task-status.processing, .recent-task-status.queued, .recent-task-status.cancelling { color: var(--blue); }
 .recent-task-status.failed { color: var(--red); }
 .recent-task-status.cancelled { color: var(--text-muted); }
 .recent-task-status.uploaded, .recent-task-status.pending { color: var(--text-muted); }
+.recent-task-status.review_pending { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
+.recent-heading-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.active-tasks-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: calc(11px * var(--ui-font-scale, 1));
+    font-weight: 700;
+}
+.recent-task-row.is-current { background: var(--blue-soft); border-radius: var(--control-radius); }
+.transcript-review-task-name { margin: 4px 0 8px; color: var(--text); font-size: calc(13px * var(--ui-font-scale, 1)); font-weight: 650; }
+.transcript-review-queue-hint {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: calc(12px * var(--ui-font-scale, 1));
+}
 
 .progress-summary { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 .progress-summary strong { min-width: 42px; text-align: right; font: 700 14px/1 ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -1081,7 +1127,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--green); o
 .file-picker input::file-selector-button { border: 0; border-radius: 6px; padding: 6px 10px; margin-right: 10px; background: var(--green-soft); color: var(--green); font: inherit; cursor: pointer; }
 .recent-panel, .task-panel, .result-panel { margin-top: 24px; }
 .recent-task-item { padding: 14px 10px; border-radius: var(--control-radius); }
-.recent-task-delete { border-radius: var(--inner-radius); }
+.recent-task-delete, .recent-task-cancel { border-radius: var(--inner-radius); }
 .recent-task-status { padding: 5px 8px; border-radius: 6px; background: var(--surface-raised); }
 .recent-task-status.completed { background: var(--green-soft); }
 .recent-task-status.failed { background: var(--red-soft); }
@@ -1484,13 +1530,13 @@ input[type="checkbox"] {
     animation-delay: calc(var(--motion-order, 0) * 35ms);
 }
 .motion-state-change { animation: motion-status 320ms var(--motion-ease); }
-.recent-task-item, .recent-task-delete, .theme-control button, .config-section > summary,
+.recent-task-item, .recent-task-delete, .recent-task-cancel, .theme-control button, .config-section > summary,
 .model-storage-panel > summary, .template-tools > summary {
     transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease,
                 border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
 .button:not(:disabled):active { transform: translateY(1px) scale(.98); }
-.recent-task-delete:not(:disabled):active, .theme-control button:active { transform: scale(.94); }
+.recent-task-delete:not(:disabled):active, .recent-task-cancel:not(:disabled):active, .theme-control button:active { transform: scale(.94); }
 .check-field input { transition: transform var(--motion-fast) var(--motion-ease); }
 .check-field input:not(:disabled):active { transform: scale(.9); }
 .progress-fill { transition: width 420ms var(--motion-ease), background-color 200ms ease; }
@@ -1851,6 +1897,7 @@ html.theme-changing .theme-control::before {
 .history-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
 .history-filters .field { flex: 1 1 130px; min-width: 0; margin: 0; }
 .history-filters .field:first-child { flex: 2 1 200px; }
+.history-filters > .compact-button { min-height: 40px; flex: 0 0 auto; }
 .history-pagination, .settings-backup-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 /* The native date popup cannot inherit page corner styles. */

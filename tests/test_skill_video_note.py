@@ -125,3 +125,157 @@ def test_transcript_submission_includes_api_or_agent_proofreading(monkeypatch, a
     else:
         assert payload['llm_config']['model'] == 'proofreader'
         assert calls[-1][1].endswith('/transcript?output_format=markdown')
+
+
+def test_agent_note_submission_supports_screenshots_crop_export_and_auto_claim(monkeypatch, capsys):
+    monkeypatch.setattr(
+        video_note.sys,
+        'argv',
+        [
+            'video_note.py',
+            'https://youtu.be/test',
+            '--agent-note',
+            '--claim',
+            '--style',
+            'learning',
+            '--format',
+            'docx',
+            '--screenshot-density',
+            'medium',
+            '--vision-screenshots',
+            '--auto-crop-screenshots',
+            '--agent-name',
+            'Antigravity IDE',
+        ],
+    )
+    monkeypatch.setattr(video_note, 'find_service', lambda **kw: 'http://127.0.0.1:8765')
+    monkeypatch.setattr(video_note, 'poll_task', lambda *args: {'status': 'awaiting_agent', 'result': {}})
+    calls = []
+
+    def http(method, url, payload=None, **kwargs):
+        calls.append((method, url, payload))
+        if url.endswith('/api/summarize'):
+            return {'task_id': 'task-agent-1'}
+        if url.endswith('/api/agent/jobs/task-agent-1/claim'):
+            return {'task_id': 'task-agent-1', 'claim_token': 'tok-123', 'lease_seconds': 1800}
+        return {}
+
+    monkeypatch.setattr(video_note, 'http_json', http)
+    video_note.main()
+    summarize_payload = calls[0][2]
+    assert calls[0][1].endswith('/api/summarize')
+    assert summarize_payload['generation_mode'] == 'agent'
+    assert summarize_payload['agent_execution'] == 'manual'
+    assert summarize_payload['summary_style'] == 'learning'
+    assert summarize_payload['note_format'] == 'docx'
+    assert summarize_payload['screenshot_density'] == 'medium'
+    assert summarize_payload['vision_screenshots'] is True
+    assert summarize_payload['auto_crop_screenshots'] is True
+    assert calls[1][1].endswith('/api/agent/jobs/task-agent-1/claim')
+    assert calls[1][2] == {'agent_name': 'Antigravity IDE'}
+    output = capsys.readouterr().out
+    assert '"claim_token": "tok-123"' in output
+
+
+def test_agent_queue_actions_screenshots_crop_and_submit(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(video_note, 'find_service', lambda **kw: 'http://127.0.0.1:8765')
+    monkeypatch.setattr(video_note, 'http_bytes', lambda url, timeout=30: b'fake-jpeg-bytes')
+    seen = []
+
+    def http(method, url, payload=None, **kwargs):
+        seen.append((method, url, payload))
+        if url.endswith('/api/agent/jobs/t1?offset=0&limit=100'):
+            return {'task_id': 't1', 'title': 'Demo', 'segments': [{'segment_index': 0, 'text': 'p1'}], 'next_offset': 1}
+        if url.endswith('/api/agent/jobs/t1?offset=1&limit=500'):
+            return {'task_id': 't1', 'title': 'Demo', 'segments': [{'segment_index': 1, 'text': 'p2'}], 'next_offset': None}
+        if url.endswith('/api/agent/jobs/t1/screenshots'):
+            return {
+                'screenshots': [{'time': 10.0, 'filename': 'f1.jpg', 'markdown_ref': 'frames/f1.jpg'}],
+                'candidate_groups': [{'time': 10.0, 'candidates': [10.0]}],
+            }
+        if url.endswith('/api/agent/jobs/t1/crop') and payload['action'] == 'prepare':
+            return {'preview': {'filename': 'f1_crop.jpg', 'markdown_ref': 'frames/f1_crop.jpg'}, 'original': {'filename': 'f1.jpg'}}
+        if url.endswith('/api/agent/jobs/t1/crop') and payload['action'] == 'confirm':
+            return {'accepted': True, 'use_full_frame': False}
+        if url.endswith('/api/agent/jobs/t1/result'):
+            return {'task_id': 't1', 'status': 'completed', 'download_path': '/api/download/t1'}
+        if url.endswith('/api/task/t1'):
+            return {'status': 'completed', 'result': {'output_directory': str(tmp_path), 'docx_path': str(tmp_path / 'out.docx'), 'markdown': '# Body'}}
+        return {'ok': True}
+
+    monkeypatch.setattr(video_note, 'http_json', http)
+
+    # 1. get-material --all-pages
+    material_out = tmp_path / 'material.json'
+    monkeypatch.setattr(video_note.sys, 'argv', ['video_note.py', 'get-material', '--task-id', 't1', '--all-pages', '--out', str(material_out)])
+    video_note.main()
+    saved_material = video_note.json.loads(material_out.read_text(encoding='utf-8'))
+    assert len(saved_material['segments']) == 2 and saved_material['next_offset'] is None
+
+    # 2. capture-screenshots downloads local image files for IDE read_file inspection
+    frames_dir = tmp_path / 'frames'
+    capsys.readouterr()
+    monkeypatch.setattr(
+        video_note.sys,
+        'argv',
+        ['video_note.py', 'capture-screenshots', '--task-id', 't1', '--claim-token', 'tok', '--times', '10.0', '--download-dir', str(frames_dir)],
+    )
+    video_note.main()
+    cap_out = video_note.json.loads(capsys.readouterr().out)
+    assert Path(cap_out['screenshots'][0]['local_path']).is_file()
+    assert cap_out['candidate_groups'][0]['candidate_files'][0]['local_path'] == cap_out['screenshots'][0]['local_path']
+
+    # 3. crop-prepare & crop-confirm
+    monkeypatch.setattr(
+        video_note.sys,
+        'argv',
+        ['video_note.py', 'crop-prepare', '--task-id', 't1', '--claim-token', 'tok', '--filename', 'f1.jpg', '--box', '0.1,0.1,0.9,0.9', '--download-dir', str(frames_dir)],
+    )
+    video_note.main()
+    crop_out = video_note.json.loads(capsys.readouterr().out)
+    assert Path(crop_out['original_local_path']).is_file()
+    assert Path(crop_out['preview_local_path']).is_file()
+
+    monkeypatch.setattr(
+        video_note.sys,
+        'argv',
+        ['video_note.py', 'crop-confirm', '--task-id', 't1', '--claim-token', 'tok', '--filename', 'f1_crop.jpg', '--approved', '--context-complete', '--clearly-better'],
+    )
+    video_note.main()
+    confirm_out = video_note.json.loads(capsys.readouterr().out)
+    assert confirm_out['accepted'] is True
+
+    # 4. submit-result from file
+    md_file = tmp_path / 'note.md'
+    md_file.write_text('# 完成笔记\n\n![图](frames/f1_crop.jpg)', encoding='utf-8')
+    monkeypatch.setattr(
+        video_note.sys,
+        'argv',
+        ['video_note.py', 'submit-result', '--task-id', 't1', '--claim-token', 'tok', '--markdown-file', str(md_file)],
+    )
+    video_note.main()
+    submit_out = video_note.json.loads(capsys.readouterr().out)
+    assert submit_out['status'] == 'completed'
+    assert submit_out['result']['docx_path'].endswith('out.docx')
+
+
+def test_poll_task_returns_immediately_on_pending_user_review_without_spam(monkeypatch, capsys):
+    calls = 0
+
+    def http(method, url, payload=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            'status': 'processing',
+            'transcript_review': {'status': 'pending'},
+            'logs': ['等待用户确认字幕'],
+        }
+
+    monkeypatch.setattr(video_note, 'http_json', http)
+    task = video_note.poll_task('http://127.0.0.1:8765', 't-pending', 3600)
+    assert calls == 1
+    assert task['transcript_review']['status'] == 'pending'
+    out = capsys.readouterr().out
+    assert out.count('等待用户确认字幕：http://127.0.0.1:8765/?task=t-pending') == 1
+
+

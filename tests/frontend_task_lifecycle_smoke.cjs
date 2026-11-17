@@ -85,9 +85,13 @@ function freshTask(id) {
         assert.equal(run('isTaskActive'),true);
         assert.equal(nodes.get('taskError').hidden,true);
         assert.equal(nodes.get('taskConnectionNotice').hidden,false);
-        assert.equal(nodes.get('submitBtn').disabled,true,'Do not enable duplicate submission');
+        assert.equal(nodes.get('submitBtn').disabled,false,'Allow queueing up to 3 concurrent tasks while one is active');
         assert.equal(nodes.get('networkState').textContent,'连接中断，任务状态待确认');
     }
+    // Verify 3-task concurrency cap locks submission until a slot frees.
+    run(`upsertActiveTaskState('c1',{status:'processing'});upsertActiveTaskState('c2',{status:'queued'});upsertActiveTaskState('c3',{status:'processing'});`);
+    assert.equal(nodes.get('submitBtn').disabled,true,'Disable submission when 3 concurrent tasks are running');
+    run(`removeActiveTaskState('c1');removeActiveTaskState('c2');removeActiveTaskState('c3');`);
     async function reconnect() {
         run('reconnectCurrentTask(); reconnectCurrentTask();');
         assert.equal(timers.size,1,'Repeated clicks must not overlap reconnect requests');

@@ -1,11 +1,134 @@
-// Human confirmation owns transcript edits; polling never overwrites an open editor.
+﻿// Human confirmation owns transcript edits; polling never overwrites an open editor.
 (() => {
     let view = null;
     let previousFocus = null;
+    let deferredTaskId = null;
+    const pendingQueue = new Map();
     const node = id => document.getElementById(id);
-    const tr = text => window.AIVideoNoteI18n?.translate(text) || text;
+    const defaultNoticeKey = node('transcriptReviewNoticeText')?.textContent?.trim() || '';
+    const defaultOpenBtnKey = node('openTranscriptReviewBtn')?.textContent?.trim() || '';
+    const tr = (text, ...args) => {
+        const template = window.AIVideoNoteI18n?.translate?.(text) || text;
+        return args.length
+            ? template.replace(/\{(\d+)\}/g, (match, idx) => {
+                const i = Number(idx);
+                return i < args.length ? String(args[i] ?? '') : match;
+            })
+            : template;
+    };
     const modal = () => node('transcriptReviewModal');
-    const current = state => view === state && currentTaskId === state.taskId;
+    const current = state => Boolean(state) && view === state;
+    const isPendingTask = task => task?.transcript_review?.status === 'pending' && ['processing', 'awaiting_agent'].includes(task?.status);
+    function taskLabel(taskId, task = null) {
+        const active = typeof activeTasksMap !== 'undefined' && activeTasksMap instanceof Map ? activeTasksMap.get(taskId) : null;
+        const recent = typeof recentTaskRows !== 'undefined' && recentTaskRows instanceof Map
+            ? recentTaskRows.get(taskId)?.task : null;
+        // The single-task status payload has no top-level title: try every source in turn
+        // instead of stopping at the first object, or the header degrades to a raw task id.
+        for (const source of [task, task?.result, active, active?.result, recent, pendingQueue.get(taskId)]) {
+            const label = source?.video_title || source?.title || source?.filename || source?.source_label;
+            if (label) return String(label);
+        }
+        return String(taskId || '');
+    }
+    function waitingCountBehindHead() {
+        if (!view) return 0;
+        let count = 0;
+        for (const id of pendingQueue.keys()) {
+            if (id !== view.taskId) count += 1;
+        }
+        return count;
+    }
+    function updateModalHeader() {
+        const taskNameNode = node('transcriptReviewTaskName');
+        if (taskNameNode) {
+            const label = view ? taskLabel(view.taskId, view.task) : '';
+            taskNameNode.textContent = label;
+            taskNameNode.hidden = !view || !label;
+        }
+        const queueHintNode = node('transcriptReviewQueueHint');
+        if (queueHintNode) {
+            const waiting = waitingCountBehindHead();
+            queueHintNode.hidden = waiting <= 0;
+            queueHintNode.textContent = waiting > 0
+                ? tr('还有 {0} 个视频排队等待核对字幕，提交当前核对后将自动弹出下一条。', waiting)
+                : '';
+        }
+    }
+    function syncNotice() {
+        const notice = node('transcriptReviewNotice');
+        const finish = () => {
+            if (typeof window !== 'undefined') window.syncDocumentTitle?.();
+        };
+        if (!notice) { finish(); return; }
+        const textNode = node('transcriptReviewNoticeText');
+        const openBtn = node('openTranscriptReviewBtn');
+        if (!view) {
+            notice.hidden = true;
+            if (textNode && defaultNoticeKey) textNode.textContent = tr(defaultNoticeKey);
+            if (openBtn && defaultOpenBtnKey) openBtn.textContent = tr(defaultOpenBtnKey);
+            finish();
+            return;
+        }
+        notice.hidden = false;
+        const headLabel = taskLabel(view.taskId, view.task);
+        const viewingId = typeof currentTaskId === 'string' ? currentTaskId : '';
+        const waitingBehindHead = Boolean(viewingId && viewingId !== view.taskId && pendingQueue.has(viewingId));
+        if (waitingBehindHead) {
+            if (textNode) {
+                textNode.textContent = tr('当前视频字幕有待确认内容；请先提交前一条视频（{0}）的字幕核对。', headLabel);
+            }
+            if (openBtn) openBtn.textContent = tr('前往核对当前待确认字幕');
+            finish();
+            return;
+        }
+        if (textNode) {
+            if (deferredTaskId === view.taskId || (viewingId && viewingId !== view.taskId)) {
+                textNode.textContent = tr('「{0}」字幕有待确认内容，点击继续核对。', headLabel);
+            } else if (defaultNoticeKey) {
+                textNode.textContent = tr(defaultNoticeKey);
+            }
+        }
+        if (openBtn) {
+            openBtn.textContent = viewingId && viewingId !== view.taskId
+                ? tr('前往核对当前待确认字幕')
+                : tr(defaultOpenBtnKey || '前往核对当前待确认字幕');
+        }
+        finish();
+    }
+    function closeModal() {
+        stopAudio();
+        if (modal()) modal().hidden = true;
+        previousFocus?.focus?.({preventScroll: true});
+    }
+    function promoteNext() {
+        if (view || pendingQueue.size === 0) {
+            updateModalHeader();
+            syncNotice();
+            return false;
+        }
+        // Submission order, not discovery order: the earliest created task goes first.
+        // Entries without a timestamp keep their insertion order (stable sort).
+        const stamp = entry => String(entry.task?.created_at || '');
+        const nextEntry = [...pendingQueue.values()].sort((a, b) => {
+            const left = stamp(a), right = stamp(b);
+            return left && right ? left.localeCompare(right) : 0;
+        })[0];
+        if (!nextEntry) return false;
+        deferredTaskId = null;
+        view = {
+            taskId: nextEntry.taskId,
+            revision: nextEntry.revision,
+            task: nextEntry.task || null,
+            loaded: false,
+            loading: false,
+            pendingDrafts: null,
+            accepted: null
+        };
+        node('transcriptReviewItems')?.replaceChildren();
+        open();
+        return true;
+    }
     function stopAudio(state = view, release = false) {
         if (!state) return;
         state.audio?.forEach(record => {
@@ -19,14 +142,38 @@
         });
     }
     function hide() {
-        stopAudio();
-        if (modal()) modal().hidden = true;
-        previousFocus?.focus?.({preventScroll: true});
+        if (view) deferredTaskId = view.taskId;
+        closeModal();
+        syncNotice();
     }
-    function reset() {
-        hide(); stopAudio(view, true); view = null;
+    function clearTask(taskId) {
+        if (!taskId) return;
+        pendingQueue.delete(taskId);
+        if (view?.taskId === taskId) {
+            stopAudio(view, true);
+            view = null;
+            deferredTaskId = null;
+            closeModal();
+            if (node('transcriptReviewLaterBtn')) node('transcriptReviewLaterBtn').disabled = false;
+            promoteNext();
+            return;
+        }
+        updateModalHeader();
+        syncNotice();
+    }
+    function reset(targetTaskId = null) {
+        if (targetTaskId) {
+            clearTask(targetTaskId);
+            return;
+        }
+        pendingQueue.clear();
+        stopAudio(view, true);
+        view = null;
+        deferredTaskId = null;
+        closeModal();
         if (node('transcriptReviewLaterBtn')) node('transcriptReviewLaterBtn').disabled = false;
-        if (node('transcriptReviewNotice')) node('transcriptReviewNotice').hidden = true;
+        updateModalHeader();
+        syncNotice();
     }
     function stamp(seconds) {
         const value = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -333,38 +480,118 @@
         } finally { state.loading = false; }
     }
     function open() {
+        if (!view) promoteNext();
         if (!view || !modal()) return;
+        deferredTaskId = null;
         previousFocus = document.activeElement;
+        updateModalHeader();
         modal().hidden = false;
         node('transcriptReviewLaterBtn')?.focus({preventScroll: true});
         if (!view.loaded) load(view);
         else node('transcriptReviewItems').querySelector('textarea')?.focus({preventScroll: true});
+        syncNotice();
+    }
+    function upsertPendingTask(taskId, task) {
+        const prev = pendingQueue.get(taskId);
+        const active = typeof activeTasksMap !== 'undefined' && activeTasksMap instanceof Map ? activeTasksMap.get(taskId) : null;
+        const mergedTask = {
+            ...(active || {}),
+            ...(prev?.task || {}),
+            ...(task || {})
+        };
+        const entry = {
+            taskId,
+            revision: task.transcript_review.revision,
+            title: taskLabel(taskId, mergedTask),
+            task: mergedTask
+        };
+        pendingQueue.set(taskId, entry);
+        if (view?.taskId === taskId) {
+            view.task = entry.task;
+            if (view.aiBusy) {
+                if (task.progress_message && task.progress_message !== '等待确认字幕')
+                    node('transcriptReviewStatus').textContent = task.progress_message;
+                return;
+            }
+            if (view.revision !== entry.revision) {
+                const pendingDrafts = view.pendingDrafts;
+                const accepted = view.accepted;
+                stopAudio(view, true);
+                view = {
+                    taskId,
+                    revision: entry.revision,
+                    task: entry.task,
+                    loaded: false,
+                    loading: false,
+                    pendingDrafts,
+                    accepted
+                };
+                node('transcriptReviewItems')?.replaceChildren();
+                deferredTaskId = null;
+                open();
+            }
+        }
     }
     function sync(taskId, task) {
-        const pending = task.transcript_review?.status === 'pending' && ['processing', 'awaiting_agent'].includes(task.status);
+        const pending = isPendingTask(task);
         if (!pending) {
-            if (view?.taskId === taskId) reset();
+            clearTask(taskId);
             return false;
         }
         if (!modal()) return false;
-        if (view?.taskId === taskId && view.aiBusy) {
-            if (task.progress_message && task.progress_message !== '等待确认字幕')
-                node('transcriptReviewStatus').textContent = task.progress_message;
-            return true;
+        upsertPendingTask(taskId, task);
+        if (!view) promoteNext();
+        if (taskId === currentTaskId) {
+            const stateText = view?.taskId === taskId ? '等待确认字幕' : '排队等待核对字幕';
+            if (node('networkState')) node('networkState').textContent = tr(stateText);
+            setTaskActive(true);
+            setTaskState('processing', stateText);
         }
-        node('transcriptReviewNotice').hidden = false;
-        node('networkState').textContent = '等待确认字幕';
-        setTaskActive(true);
-        setTaskState('processing', '等待确认字幕');
-        if (view?.taskId !== taskId || view.revision !== task.transcript_review.revision) {
-            const pendingDrafts = view?.taskId === taskId ? view.pendingDrafts : null;
-            const accepted = view?.taskId === taskId ? view.accepted : null;
-            stopAudio(view, true);
-            view = {taskId, revision: task.transcript_review.revision, loaded: false, loading: false, pendingDrafts, accepted};
-            node('transcriptReviewItems').replaceChildren();
-            open();
-        }
+        updateModalHeader();
+        syncNotice();
         return true;
+    }
+    function syncBatch(tasks, options = {}) {
+        const rows = Array.isArray(tasks) ? tasks : [];
+        const activeIds = new Set();
+        const pendingRows = [];
+        for (const task of rows) {
+            if (!task?.task_id) continue;
+            activeIds.add(task.task_id);
+            if (isPendingTask(task)) {
+                pendingRows.push(task);
+            } else {
+                pendingQueue.delete(task.task_id);
+            }
+        }
+        if (options.prune) {
+            for (const queuedId of Array.from(pendingQueue.keys())) {
+                if (!activeIds.has(queuedId)) pendingQueue.delete(queuedId);
+            }
+        }
+        pendingRows
+            .slice()
+            .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+            .forEach(task => upsertPendingTask(task.task_id, task));
+        if (view && !pendingQueue.has(view.taskId)) {
+            stopAudio(view, true);
+            view = null;
+            deferredTaskId = null;
+            closeModal();
+            ['transcriptReviewLaterBtn', 'transcriptReviewKeepBtn', 'transcriptReviewApplyBtn'].forEach(id => {
+                if (node(id)) node(id).disabled = false;
+            });
+        }
+        if (!view && modal()) promoteNext();
+        if (typeof currentTaskId === 'string' && currentTaskId && pendingQueue.has(currentTaskId)) {
+            const stateText = view?.taskId === currentTaskId ? '等待确认字幕' : '排队等待核对字幕';
+            if (node('networkState')) node('networkState').textContent = tr(stateText);
+            setTaskActive(true);
+            setTaskState('processing', stateText);
+        }
+        updateModalHeader();
+        syncNotice();
+        return view?.taskId || null;
     }
     async function confirm(keepOriginal) {
         const state = view;
@@ -390,8 +617,12 @@
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
             }, 20000), '确认字幕失败');
             if (!current(state)) return;
-            reset();
+            ['transcriptReviewLaterBtn', 'transcriptReviewKeepBtn', 'transcriptReviewApplyBtn'].forEach(id => {
+                if (node(id)) node(id).disabled = false;
+            });
+            clearTask(state.taskId);
             schedulePoll(state.taskId, 0);
+            if (typeof loadRecentTasks === 'function') loadRecentTasks(true);
         } catch (error) {
             if (current(state)) node('transcriptReviewStatus').textContent = error.message || '确认字幕失败，请重试';
         } finally {
@@ -462,7 +693,16 @@
             }
         });
     });
+    window.addEventListener('ui-language-changed', () => {
+        updateModalHeader();
+        syncNotice();
+    });
     window.syncTranscriptReview = sync;
+    window.syncTranscriptReviewBatch = syncBatch;
+    window.syncTranscriptReviewNotice = syncNotice;
+    window.clearTranscriptReviewTask = clearTask;
     window.resetTranscriptReview = reset;
     window.openTranscriptReview = open;
+    window.hasPendingTranscriptReview = () => pendingQueue.size > 0 || Boolean(view);
+    window.getPendingTranscriptReviewTaskId = () => view?.taskId || null;
 })();

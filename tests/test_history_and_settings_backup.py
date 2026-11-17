@@ -88,6 +88,62 @@ def test_corrupt_history_does_not_hide_valid_rows(app_data):
     (directory/'task.json').write_text('{broken',encoding='utf-8')
     assert client.get('/api/tasks').json()['total']==1
 
+
+def test_history_reports_concurrency_limit_and_safe_review_state(app_data, monkeypatch):
+    root, client = app_data
+    assert client.get('/api/tasks').json()['max_concurrent_tasks'] == 3
+    monkeypatch.setattr(main, 'MAX_CONCURRENT_TASKS', 2)
+    assert client.get('/api/tasks').json()['max_concurrent_tasks'] == 2
+    monkeypatch.setattr(main, 'MAX_CONCURRENT_TASKS', 9)
+    assert client.get('/api/tasks').json()['max_concurrent_tasks'] == 3
+
+    stale_dir = root / 'tasks' / 'stale-disk'
+    stale_dir.mkdir(parents=True)
+    (stale_dir / 'task.json').write_text(json.dumps({
+        'task_id': 'stale-disk',
+        'created_at': '2026-11-16T08:00:00+00:00',
+        'title': '已停止旧任务',
+        'output': 'note',
+        'runtime': {
+            'status': 'failed',
+            'transcript_review': {'status': 'pending', 'revision': 'r-stale', 'count': 2},
+        },
+    }, ensure_ascii=False), encoding='utf-8')
+
+    active_task = main.new_task('processing', 'live-review')
+    active_task['created_at'] = '2026-11-16T09:00:00+00:00'
+    active_task['result'] = {'title': '待核对任务'}
+    active_task['transcript_review'] = {
+        'status': 'pending',
+        'revision': 'r1',
+        'manual_check': True,
+        'count': 4,
+        'items': [{'original': 'PRIVATE_TRANSCRIPT_TEXT'}],
+    }
+    main.tasks['live-review'] = active_task
+
+    active_payload = client.get('/api/tasks', params={'status': 'active'}).json()
+    assert active_payload['tasks'][0]['transcript_review'] == {
+        'status': 'pending',
+        'revision': 'r1',
+        'manual_check': True,
+        'count': 4,
+    }
+    assert 'PRIVATE_TRANSCRIPT_TEXT' not in json.dumps(active_payload, ensure_ascii=False)
+
+    all_rows = {row['task_id']: row for row in client.get('/api/tasks').json()['tasks']}
+    assert all_rows['stale-disk']['transcript_review'] is None
+
+    # In-memory cancelling/failed tasks must also clear stale pending transcript_review in history.
+    active_task['status'] = 'cancelling'
+    cancelling_rows = {row['task_id']: row for row in client.get('/api/tasks', params={'status': 'active'}).json()['tasks']}
+    assert cancelling_rows['live-review']['transcript_review'] is None
+
+    # Restoring an interrupted task into memory clears stale pending transcript_review.
+    main.tasks.clear()
+    main.restore_tasks_from_workspace({'stale-disk'})
+    assert main.tasks['stale-disk']['transcript_review'] is None
+
 def manual_backup(root):
     store=PreferencesStore(root)
     first=store.save({'schema':3,'ui':{'theme':'dark'},'templates':[{'id':'t','name':'课程','settings':{}}],

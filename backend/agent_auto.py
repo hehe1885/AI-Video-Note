@@ -230,7 +230,7 @@ async def _run_cli(task_id, prompt, schema=None, images=()):
     deadline = time.monotonic() + 1200
     try:
         while not communication.done():
-            if task.get('_cancel_requested') or task.get('status') != 'awaiting_agent':
+            if task.get('_cancel_requested') or task.get('status') not in ('awaiting_agent', 'processing'):
                 raise asyncio.CancelledError()
             if time.monotonic() > deadline:
                 raise RuntimeError(name + ' 自动处理超时，可通过 MCP 或手动导入继续')

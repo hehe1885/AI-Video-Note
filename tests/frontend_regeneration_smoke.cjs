@@ -29,7 +29,7 @@ run(`initSelectPickers = () => {}; pollModelDownload = () => {}; bindEvents();
     validateAndBuildRequestBase = () => ({sourceType:'local',videoUrl:'',transcriptOnly:false,modelConfig:{name:'test'}});
     buildSummarizeConfig = (url,upload,resume,restart) => ({resume_task_id:resume,processing_mode:restart?'restart':'reuse'});
     loadRecentTasks = () => {}; addLog = () => {}; showToast = captureToast;
-    schedulePoll = () => {}; renderAgentRunInfo = () => {}; clearLogs = () => {};
+    schedulePoll = () => {}; scheduleBackgroundTaskSync = () => {}; renderAgentRunInfo = () => {}; clearLogs = () => {};
     refreshWhisperModelHints = () => {};
     updateProgress = () => {}; updateStep = () => {}; renderTaskAdvisory = () => {};
     setSourceControlsDisabled = () => {};

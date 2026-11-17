@@ -543,6 +543,7 @@ function applyFontSize(size) {
     const selected = allowed.includes(migrated) ? migrated : 'standard';
     document.documentElement.dataset.fontSize = selected;
     if (byId('fontSize')) byId('fontSize').value = selected;
+    if (typeof syncRecentTaskListHeight === 'function') syncRecentTaskListHeight();
 }
 
 function initThemeControl() {
@@ -611,13 +612,21 @@ function renderNoteSaveLocation() {
     byId('noteSaveDirectoryLabel').textContent = directory || tr('使用默认保存位置');
     byId('noteSaveDirectoryLabel').title = directory || tr('使用默认保存位置');
     byId('resetNoteDirectoryBtn').hidden = !directory;
-    byId('chooseNoteDirectoryBtn').disabled = isTaskActive || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled;
-    byId('resetNoteDirectoryBtn').disabled = isTaskActive || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled;
+    const queueFull = typeof atConcurrentTaskLimit === 'function'
+        ? atConcurrentTaskLimit()
+        : (typeof isTaskActive !== 'undefined' && isTaskActive);
+    const submitting = typeof isSubmitting !== 'undefined' && isSubmitting;
+    byId('chooseNoteDirectoryBtn').disabled = queueFull || submitting || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled;
+    byId('resetNoteDirectoryBtn').disabled = queueFull || submitting || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled;
     byId('chooseNoteDirectoryBtn').textContent = tr(noteDirectoryPickerBusy ? '请在系统窗口中选择文件夹…' : '选择保存文件夹');
 }
 
 function resetNoteSaveDirectory() {
-    if (isTaskActive || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled) return;
+    const queueFull = typeof atConcurrentTaskLimit === 'function'
+        ? atConcurrentTaskLimit()
+        : (typeof isTaskActive !== 'undefined' && isTaskActive);
+    const submitting = typeof isSubmitting !== 'undefined' && isSubmitting;
+    if (queueFull || submitting || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled) return;
     byId('noteSaveDirectory').value = '';
     renderNoteSaveLocation();
     persistGlobals();
@@ -645,7 +654,11 @@ async function exportAgentSkill() {
 }
 
 async function chooseNoteSaveDirectory() {
-    if (isTaskActive || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled) return;
+    const queueFull = typeof atConcurrentTaskLimit === 'function'
+        ? atConcurrentTaskLimit()
+        : (typeof isTaskActive !== 'undefined' && isTaskActive);
+    const submitting = typeof isSubmitting !== 'undefined' && isSubmitting;
+    if (queueFull || submitting || noteDirectoryPickerBusy || byId('noteSaveDirectory').disabled) return;
     noteDirectoryPickerBusy = true;
     renderNoteSaveLocation();
     try {
@@ -1158,7 +1171,8 @@ async function exportSettingsBackup() {
 }
 
 function settingsImportTaskActive() {
-    return isTaskActive || isSubmitting || currentTaskStatus === 'awaiting_agent';
+    const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+    return anyActive || isSubmitting || currentTaskStatus === 'awaiting_agent';
 }
 
 function chooseSettingsBackupFile() {

@@ -1104,6 +1104,163 @@ async def test_task_queue_respects_concurrency_limit(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_queue_defaults_to_three_concurrent_tasks(monkeypatch) -> None:
+    assert main.MAX_CONCURRENT_TASKS == 3
+    active = 0
+    maximum_active = 0
+    three_running = asyncio.Event()
+    release_first = asyncio.Event()
+    started: list[str] = []
+
+    async def fake_process(task_id, request):
+        nonlocal active, maximum_active
+        started.append(task_id)
+        active += 1
+        maximum_active = max(maximum_active, active)
+        if active == 3:
+            three_running.set()
+        await release_first.wait()
+        active -= 1
+
+    monkeypatch.setattr(main, "task_slots", asyncio.Semaphore(main.MAX_CONCURRENT_TASKS))
+    monkeypatch.setattr(main, "process_video_task", fake_process)
+    request = main.SummarizeRequest(
+        video_url="https://example.com/video",
+        llm_config={"model_type": "deepseek", "api_key": "test-key"},
+    )
+    ids = ("c-1", "c-2", "c-3", "c-4")
+    for task_id in ids:
+        main.tasks[task_id] = main.new_task(task_id=task_id)
+
+    jobs = [asyncio.create_task(main.run_queued_video_task(task_id, request)) for task_id in ids]
+    await asyncio.wait_for(three_running.wait(), timeout=2)
+    await asyncio.sleep(0.02)
+    assert maximum_active == 3
+    assert len(started) == 3
+    release_first.set()
+    await asyncio.gather(*jobs)
+    assert len(started) == 4
+    assert maximum_active == 3
+    for task_id in ids:
+        main.tasks.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_does_not_release_slot_while_native_worker_still_runs(monkeypatch, tmp_path) -> None:
+    """A cancelled parent is shielded from its worker; the ASR slot must stay held until the worker exits."""
+    active = 0
+    maximum_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def fake_local(media_path, *args, **kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        if media_path.name == "a.wav":
+            first_started.set()
+            try:
+                await release_first.wait()
+            finally:
+                active -= 1
+            return {"device": "cpu"}
+        second_started.set()
+        active -= 1
+        return {"device": "cpu"}
+
+    monkeypatch.setattr(main, "asr_slots", asyncio.Semaphore(1))
+    monkeypatch.setattr(main.asr_process, "use_child_process", lambda: False)
+    monkeypatch.setattr(main, "run_transcription_local", fake_local)
+
+    first = asyncio.create_task(main.run_transcription(tmp_path / "a.wav", "base", False, None, None))
+    await asyncio.wait_for(first_started.wait(), timeout=2)
+    second = asyncio.create_task(main.run_transcription(tmp_path / "b.wav", "base", False, None, None))
+    await asyncio.sleep(0.02)
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await asyncio.sleep(0.05)
+    # The first native worker is still running, so the second must keep waiting.
+    assert not second_started.is_set()
+    assert maximum_active == 1
+
+    release_first.set()
+    await asyncio.wait_for(second, timeout=2)
+    assert second_started.is_set()
+    assert maximum_active == 1
+
+
+@pytest.mark.asyncio
+async def test_asr_slots_serialize_local_transcription_under_concurrency(monkeypatch, tmp_path) -> None:
+    assert main.MAX_CONCURRENT_ASR == 1
+    active = 0
+    maximum_active = 0
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    waited_events: list[str] = []
+    ready_events: list[str] = []
+
+    async def fake_local(media_path, *args, **kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        first_entered.set()
+        await release_first.wait()
+        active -= 1
+        return {"segments": [], "device": "cpu", "name": media_path.name}
+
+    monkeypatch.setattr(main, "asr_slots", asyncio.Semaphore(1))
+    monkeypatch.setattr(main.asr_process, "use_child_process", lambda: False)
+    monkeypatch.setattr(main, "run_transcription_local", fake_local)
+
+    first = asyncio.create_task(
+        main.run_transcription(tmp_path / "a.wav", "base", False, None, None)
+    )
+    await asyncio.wait_for(first_entered.wait(), timeout=2)
+
+    second_cancel = asyncio.Event()
+    second = asyncio.create_task(
+        main.run_transcription(
+            tmp_path / "b.wav",
+            "base",
+            False,
+            None,
+            None,
+            waiting_callback=lambda: waited_events.append("b"),
+            ready_callback=lambda: ready_events.append("b"),
+        )
+    )
+    cancelled_waiter = asyncio.create_task(
+        main.run_transcription(
+            tmp_path / "c.wav",
+            "base",
+            False,
+            None,
+            second_cancel,
+            waiting_callback=lambda: waited_events.append("c"),
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert maximum_active == 1
+    assert waited_events == ["b", "c"]
+    assert ready_events == []
+
+    second_cancel.set()
+    cancelled_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_waiter
+
+    release_first.set()
+    r1, r2 = await asyncio.gather(first, second)
+    assert r1["name"] == "a.wav"
+    assert r2["name"] == "b.wav"
+    assert maximum_active == 1
+    assert ready_events == ["b"]
+
+
+@pytest.mark.asyncio
 async def test_task_status_reports_and_freezes_elapsed_time() -> None:
     task_id = "timing-task"
     task = main.new_task("processing")

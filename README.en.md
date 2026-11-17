@@ -73,6 +73,7 @@ Choose where to save notes. For Obsidian, configure note folders, attachment loc
 ### History, progress and cache management
 
 - Process long tasks in segments, show stages, progress and logs, and save intermediate materials. Reopen historical tasks or regenerate notes from existing materials.
+- Generate up to 3 notes at once in a single page (`MAX_CONCURRENT_TASKS`, range 1–3): keep submitting while earlier tasks run, open any task from History to follow its progress, and cancel running tasks inline. Local speech transcription runs one job at a time by default (`MAX_CONCURRENT_ASR`) to avoid GPU/RAM contention. When several videos need subtitle review, only one review window opens at a time, in submission order; the next appears after you submit the previous one.
 - Filter history by title, status, output type and date to find and manage earlier work.
 - View storage statistics and clean audio/video caches. Opening the cleanup dialog previews the files; **Clean cache** performs the deletion. Notes, subtitles, screenshots, history and models are preserved.
 - Manage or delete models separately, import and export settings, check the environment and repair dependencies.

@@ -126,7 +126,11 @@ FAVICON_PATH = BASE_DIR / "sources" / "icon.ico"
 # 保留与在线视频一致的轻量工作目录；勾选“视频截图”时保留原视频。
 LARGE_UPLOAD_EXTRACT_MB = int(os.getenv("LARGE_UPLOAD_EXTRACT_MB", "300"))
 LARGE_UPLOAD_EXTRACT_BYTES = LARGE_UPLOAD_EXTRACT_MB * 1024 * 1024
-MAX_CONCURRENT_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_TASKS", "1")))
+MAX_CONCURRENT_TASKS = min(3, max(1, int(os.getenv("MAX_CONCURRENT_TASKS", "3"))))
+MAX_CONCURRENT_ASR = min(
+    MAX_CONCURRENT_TASKS,
+    max(1, int(os.getenv("MAX_CONCURRENT_ASR", "1"))),
+)
 TASK_HISTORY_LIMIT = max(10, int(os.getenv("TASK_HISTORY_LIMIT", "100")))
 ALLOWED_MEDIA_SUFFIXES = {
     ".mp3",
@@ -164,7 +168,7 @@ NOTE_IMAGE_REF_RE = re.compile(
     rf"(!\[[^\]]*\]\()(?:\./)?(?:{FRAMES_DIR_NAME}|images)/([^)]+)\)"
 )
 
-app = FastAPI(title="AI Video Note API", version="1.0.2")
+app = FastAPI(title="AI Video Note API", version="1.0.3")
 detailed_logs.startup(WORKSPACE_DIR, app.version)
 
 
@@ -399,31 +403,58 @@ async def run_transcription(
     cancel_event: Any,
     progress_callback: Any = None,
     gpu_backend: str = "cuda",
+    waiting_callback: Any = None,
+    ready_callback: Any = None,
 ) -> dict:
-    """转写入口：打包版交给工人子进程，源码版在原进程里跑。
+    """转写入口：打包版交给工人子进程，源码版在原进程里跑，并通过 asr_slots 序列化本地硬件负载。
 
     CTranslate2 / sherpa-onnx 在打包环境里出过一次访问违例（崩的是整个进程，
     托盘和界面一起没，日志一个字都没留下），所以正式产物里的转写必须死在外头。
     """
-    options = {"gpu_backend": gpu_backend} if use_gpu and gpu_backend != "cuda" else {}
-    if use_gpu and gpu_backend == 'auto':
-        # Resolve once in the server, reusing the same probe result as the UI.
-        options['resolved_backend'] = await resolve_backend('auto', model_name)
-        asr_diagnostics.emit(f"自动选择识别后端：{options['resolved_backend'].upper()}（主进程确认）")
-    if asr_process.use_child_process() or options or os.environ.get("AI_VIDEO_NOTE_MANAGED_SERVER") == "1" or browser_sessions.on_empty is not None:
-        operation = asr_process.run_in_child(
-            media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError("转写已取消")
+    waited = False
+    if asr_slots.locked():
+        waited = True
+        asr_diagnostics.emit(
+            f"等待前序任务释放本地语音转写槽位（当前上限 {MAX_CONCURRENT_ASR}）"
         )
-    else:
-        operation = run_transcription_local(
-            media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
-        )
-    job = asyncio.create_task(_await_transcription(operation))
-    _active_transcriptions.add(job)
-    job.add_done_callback(_transcription_finished)
-    # Cancellation can finish the UI task before its native worker stops. Keep tracking
-    # that worker so files cannot be removed or the model directory switched meanwhile.
-    return await asyncio.shield(job)
+        if callable(waiting_callback):
+            waiting_callback()
+    await asr_slots.acquire()
+    slot_owned = True
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise asyncio.CancelledError("转写已取消")
+        if waited and callable(ready_callback):
+            ready_callback()
+        options = {"gpu_backend": gpu_backend} if use_gpu and gpu_backend != "cuda" else {}
+        if use_gpu and gpu_backend == 'auto':
+            # Resolve once in the server, reusing the same probe result as the UI.
+            options['resolved_backend'] = await resolve_backend('auto', model_name)
+            asr_diagnostics.emit(f"自动选择识别后端：{options['resolved_backend'].upper()}（主进程确认）")
+        if asr_process.use_child_process() or options or os.environ.get("AI_VIDEO_NOTE_MANAGED_SERVER") == "1" or browser_sessions.on_empty is not None:
+            operation = asr_process.run_in_child(
+                media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
+            )
+        else:
+            operation = run_transcription_local(
+                media_path, model_name, use_gpu, title, cancel_event, progress_callback, **options
+            )
+        job = asyncio.create_task(_await_transcription(operation))
+        _active_transcriptions.add(job)
+        job.add_done_callback(_transcription_finished)
+        # The slot now belongs to the worker, not to this (cancellable) caller: a cancelled
+        # parent returns immediately while the native process may still be using the GPU/RAM,
+        # so release only once the worker itself has finished.
+        job.add_done_callback(lambda _job: asr_slots.release())
+        slot_owned = False
+        # Cancellation can finish the UI task before its native worker stops. Keep tracking
+        # that worker so files cannot be removed or the model directory switched meanwhile.
+        return await asyncio.shield(job)
+    finally:
+        if slot_owned:
+            asr_slots.release()
 
 
 async def _vulkan_or_cpu(media_path, model_name, backend, title, cancel_event, progress_callback):
@@ -536,6 +567,7 @@ tasks: dict[str, dict[str, Any]] = {}
 running_jobs: dict[str, asyncio.Task[None]] = {}
 _storage_cleaning = False
 task_slots = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+asr_slots = asyncio.Semaphore(MAX_CONCURRENT_ASR)
 
 
 class BilibiliCookie(BaseModel):
@@ -2103,11 +2135,23 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="任务已经结束")
 
     if task["status"] == "awaiting_agent":
-        task.update(status="cancelled", step_name="已取消", _cancel_requested=True)
+        task.update(status="cancelled", step_name="已取消", _cancel_requested=True, _agent_auto_running=False)
+        if isinstance(task.get("transcript_review"), dict) and task["transcript_review"].get("status") == "pending":
+            task["transcript_review"] = None
+        cancel_event = task.get("_cancel_event")
+        if cancel_event is not None:
+            cancel_event.set()
         checked_event = task.get('_transcript_checked_event')
         if checked_event: checked_event.set()
         review_event = task.get("_transcript_review_event")
         if review_event: review_event.set()
+        from . import agent_auto
+        worker = agent_auto.workers.pop(task_id, None)
+        if worker is not None and not worker.done():
+            worker.cancel()
+        job = running_jobs.get(task_id)
+        if job is not None and not job.done():
+            job.cancel()
         finish_task_timing(task)
         persist_task_runtime(task_id)
         return {"cancelled": True, "status": "cancelled", "elapsed_seconds": task_elapsed_seconds(task)}
@@ -2276,6 +2320,8 @@ async def run_queued_video_task(task_id: str, request: SummarizeRequest) -> None
             await process_video_task(task_id, request)
     except asyncio.CancelledError:
         finish_task_timing(task)
+        if isinstance(task.get("transcript_review"), dict) and task["transcript_review"].get("status") == "pending":
+            task["transcript_review"] = None
         task.update(status="cancelled", step_name="已取消", error=None)
         task["logs"].append("任务已取消；已生成的中间文件将保留")
         persist_task_runtime(task_id)
@@ -2735,6 +2781,13 @@ def restore_tasks_from_workspace(task_ids: set[str] | None = None) -> None:
 
         task = new_task(status=status, task_id=task_id)
         task["_started_monotonic"] = None
+        saved_review = runtime.get("transcript_review")
+        if (
+            isinstance(saved_review, dict)
+            and saved_review.get("status") == "pending"
+            and status not in {"processing", "awaiting_agent"}
+        ):
+            saved_review = None
         task.update(
             step=int(safe_number(runtime.get("step"))),
             step_name=str(runtime.get("step_name") or "已恢复"),
@@ -2746,7 +2799,7 @@ def restore_tasks_from_workspace(task_ids: set[str] | None = None) -> None:
             screenshot_warning=runtime.get("screenshot_warning"),
             video_path=runtime.get("video_path"),
             agent_runtime=runtime.get("agent_runtime"),
-            transcript_review=runtime.get("transcript_review"),
+            transcript_review=saved_review,
             created_at=runtime.get("created_at") or manifest.get("created_at"),
             finished_at=runtime.get("finished_at"),
             elapsed_seconds=max(0, safe_number(runtime.get("elapsed_seconds"))),

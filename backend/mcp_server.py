@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", message=r"Field 'lifespan' has an incomplete d
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8765"
 PORT_SCAN_RANGE = 20
-HTTP_TIMEOUT = httpx.Timeout(20.0)
+HTTP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 mcp = FastMCP(
     "AI Video Note",
@@ -51,7 +51,7 @@ mcp = FastMCP(
         "领取校对任务，读取全部材料并上报 report_agent_transcript_issues（无修改也须空列表），有建议等待用户确认，再 get_transcript 取正文——这条路不需要 API Key，转录内容由你自己组织结构与风格，"
         "不受内置笔记模板限制；只有用户明确要一份成品笔记、或视频很长希望后台跑完时，"
         "才用 summarize_video（它按本机保存的 Key 调大模型，产出固定风格的 Markdown 笔记）。\n"
-        "两条路的任务状态是同一份：提交后用 wait_for_task 等终态（每次最多等待 45 秒，可重复调用），"
+        "两条路的任务状态是同一份：提交后用 wait_for_task 等终态（默认等待 120 秒，单次最长 600 秒，可重复调用），"
         "不要频繁轮询 get_task_status（仅在需要中间进度时用它）。"
         "已经走完转写的任务（包括后来生成笔记失败的）都能用 get_transcript 直接取转录，不必重跑。\n"
         "LLM 配置与 B 站凭据支持保存到本机（save_llm_config / save_bilibili_credentials），"
@@ -490,23 +490,24 @@ async def transcribe_video(
 @mcp.tool()
 async def wait_for_task(
     task_id: str,
-    timeout_seconds: int = 45,
+    timeout_seconds: int = 120,
     include_markdown: bool = True,
 ) -> dict[str, Any]:
     """等待视频总结任务达到终态（completed / failed / cancelled），最长等待 timeout_seconds 秒。
 
-    任务仍在处理中时本工具会持续等待，到终态或超时才返回；
-    建议用它代替频繁轮询 get_task_status（一次等待最多 45 秒，可重复调用）。
+    任务仍在处理中时本工具会持续等待，到终态、需要 Agent/用户介入或超时才返回；
+    建议用它代替频繁轮询 get_task_status（默认 120 秒，单次最多 600 秒，长视频可传 300-600 秒）。
 
     Args:
-        task_id: summarize_video 返回的任务 ID。
-        timeout_seconds: 最长等待秒数（5-60）。
+        task_id: summarize_video / transcribe_video / create_agent_note_job 返回的任务 ID。
+        timeout_seconds: 最长等待秒数（5-600，默认 120）。
         include_markdown: 为 False 时省略笔记正文。
     """
-    timeout_seconds = max(5, min(timeout_seconds, 60))
+    timeout_seconds = max(5, min(timeout_seconds, 600))
     backend = _get_backend()
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
+    started = loop.time()
+    deadline = started + timeout_seconds
     waited = 0.0
     while True:
         data = await backend.get_task(task_id)
@@ -514,11 +515,14 @@ async def wait_for_task(
             break
         if data.get('status') == 'awaiting_agent' or (data.get('transcript_review') or {}).get('status') == 'pending':
             break
-        remaining = deadline - loop.time()
+        now = loop.time()
+        remaining = deadline - now
         if remaining <= 0:
             break
-        await asyncio.sleep(min(2.0, remaining))
-        waited += min(2.0, remaining)
+        step = 2.0 if (now - started) < 30.0 else 5.0
+        sleep_time = min(step, remaining)
+        await asyncio.sleep(sleep_time)
+        waited += sleep_time
     data["waited_seconds"] = round(waited, 1)
     if data.get("status") not in {"completed", "failed", "cancelled"}:
         data["hint"] = "任务仍在处理中，可再次调用 wait_for_task 继续等待。"

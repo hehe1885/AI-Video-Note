@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
-"""AI Video Note Agent Skill 脚本：一条命令完成"视频 → 笔记"。
+"""AI Video Note Agent Skill 脚本：支持一键成稿、字幕校对、网页端任务队列接管、AI配图/视觉核对/区域裁剪及多格式导出。
 
-自动探测本机 AI Video Note 服务端口（8765-8784），未运行时按需启动，提交任务、轮询进度、
-输出完整 Markdown 笔记。仅依赖 Python 标准库。
+自动探测本机 AI Video Note 服务端口（8765-8784），未运行时按需启动，仅依赖 Python 标准库。
 
 用法:
-    python video_note.py "<视频链接或本地文件路径>" [选项]
+    # 1. 提交视频/本地文件（Agent 自有模型路线，无需软件 API Key，支持配图与多格式导出）
+    python video_note.py "<视频链接或本地文件路径>" --agent-note [--format docx] [--screenshot-density medium] [--vision-screenshots] [--auto-crop-screenshots]
 
-常用选项:
-    --style {detailed,faithful,concise}   笔记风格（默认 detailed）
-    --transcript-only                     生成带时间轴字幕，包含AI校对
-    --no-reuse                            禁止复用同链接已有转录，强制重新转写
-    --no-auto-start                       不自动启动本机服务
-    --provider {deepseek,openai,qwen,glm,moonshot,custom}
-    --api-key -                           大模型 API Key（- 表示从标准输入读）
-                                          也可设环境变量 AI_VIDEO_NOTE_LLM_API_KEY；
-                                          该地址已保存到本机时两者都可省略
-    --wait SECONDS                        最长等待秒数（默认 1800）
-    --out PATH                            把笔记写入文件（默认打印到 stdout）
+    # 2. 提交视频/本地文件（仅转录并由 Agent 校对字幕）
+    python video_note.py "<视频链接或本地文件路径>" --transcript-only --review-agent
+
+    # 3. 提交视频/本地文件（软件内置模型 API 路线）
+    python video_note.py "<视频链接或本地文件路径>" --style detailed
+
+    # 4. 网页端 Agent 队列接管、字幕校对、AI 截图/看图核对/裁剪与结果回传导出
+    python video_note.py list-jobs
+    python video_note.py claim --task-id <ID> [--agent-name "Antigravity IDE"]
+    python video_note.py get-material --task-id <ID> [--all-pages] [--out material.json]
+    python video_note.py report-issues --task-id <ID> --claim-token <TOKEN> [--issues-file issues.json]
+    python video_note.py capture-screenshots --task-id <ID> --claim-token <TOKEN> --times 12.5,48,120 [--download-dir frames_dir]
+    python video_note.py fetch-image --task-id <ID> --filename frame1.jpg,frame2.jpg [--download-dir frames_dir]
+    python video_note.py crop-prepare --task-id <ID> --claim-token <TOKEN> --filename frame1.jpg --box 0.1,0.1,0.9,0.85 [--download-dir frames_dir]
+    python video_note.py crop-confirm --task-id <ID> --claim-token <TOKEN> --filename preview.jpg --approved --context-complete --clearly-better
+    python video_note.py renew-lease --task-id <ID> --claim-token <TOKEN> [--release]
+    python video_note.py submit-result --task-id <ID> --claim-token <TOKEN> --markdown-file note.md
 
 退出码: 0 成功 | 1 参数/服务错误 | 2 任务失败 | 3 等待超时
 """
@@ -34,13 +40,40 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 
 PORT_RANGE = range(8765, 8785)
 POLL_INTERVAL_SECONDS = 3
+FAST_POLL_INTERVAL_SECONDS = 2
+SLOW_POLL_INTERVAL_SECONDS = 5
+DEFAULT_WAIT_SECONDS = 3600
+LONG_HTTP_TIMEOUT_SECONDS = 600
 PROVIDERS = {"deepseek", "openai", "openai_gpt4", "openai_gpt35", "qwen", "glm", "moonshot", "custom"}
+STYLES = ("detailed", "faithful", "concise", "obsidian", "learning", "tutorial", "cards", "outline", "meeting")
+NOTE_FORMATS = ("markdown", "obsidian", "docx", "html", "json", "txt", "png", "pdf", "enex")
+SCREENSHOT_DENSITIES = ("none", "few", "medium", "many")
+TIMELINE_MODES = ("none", "heading", "paragraph_start", "paragraph_end", "all")
+POSITIONS = ("none", "start", "end")
+TEXT_DETAILS = ("brief", "standard", "detailed")
+NOTE_LANGUAGES = ("zh-CN", "en")
+OBSIDIAN_ATTACHMENT_MODES = ("vault_root", "note_folder", "note_subfolder", "specified_folder")
+AGENT_ACTIONS = (
+    "list-jobs",
+    "claim",
+    "get-material",
+    "report-issues",
+    "capture-screenshots",
+    "fetch-image",
+    "crop-prepare",
+    "crop-confirm",
+    "renew-lease",
+    "submit-result",
+    "wait-task",
+    "get-transcript",
+)
 UPLOAD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 # Key 走命令行会留在 shell 历史与进程列表里，所以默认鼓励用环境变量或 stdin
 API_KEY_ENV = "AI_VIDEO_NOTE_LLM_API_KEY"
@@ -227,11 +260,13 @@ def upload_file(base: str, path: Path) -> str:
     return payload["task_id"]
 
 
-def poll_task(base: str, task_id: str, wait_seconds: int) -> dict:
-    deadline = time.monotonic() + wait_seconds
+def poll_task(base: str, task_id: str, wait_seconds: int, *, block_on_user_review: bool = False) -> dict:
+    started = time.monotonic()
+    deadline = started + wait_seconds
     printed_logs = 0
+    notified_pending = False
     while True:
-        task = http_json("GET", f"{base}/api/task/{task_id}", timeout=15)
+        task = http_json("GET", f"{base}/api/task/{task_id}", timeout=20)
         logs = task.get("logs") or []
         for line in logs[printed_logs:]:
             print(f"  | {redact(line)}")
@@ -256,15 +291,24 @@ def poll_task(base: str, task_id: str, wait_seconds: int) -> dict:
         if status == 'awaiting_agent':
             return task
         if (task.get('transcript_review') or {}).get('status') == 'pending':
-            print(f'[AI Video Note] 等待用户确认字幕：{base}/?task={task_id}')
-        if time.monotonic() > deadline:
+            if not notified_pending:
+                print(f'[AI Video Note] 等待用户确认字幕：{base}/?task={task_id}')
+                notified_pending = True
+            if not block_on_user_review:
+                return task
+        else:
+            notified_pending = False
+        now = time.monotonic()
+        if now > deadline:
             print(
                 f"[AI Video Note] 等待超时（{wait_seconds} 秒），任务仍在后台运行：task_id={task_id}",
                 file=sys.stderr,
             )
-            print(f"[AI Video Note] 稍后可用 GET {base}/api/task/{task_id} 继续查询", file=sys.stderr)
+            print(f"[AI Video Note] 稍后可用 wait-task --task-id {task_id} 或 GET {base}/api/task/{task_id} 继续查询", file=sys.stderr)
             sys.exit(3)
-        time.sleep(POLL_INTERVAL_SECONDS)
+        elapsed = now - started
+        interval = FAST_POLL_INTERVAL_SECONDS if elapsed < 30 else SLOW_POLL_INTERVAL_SECONDS
+        time.sleep(interval)
 
 
 def resolve_api_key(args) -> str:
@@ -289,6 +333,402 @@ def resolve_api_key(args) -> str:
     return os.environ.get(API_KEY_ENV, "").strip()
 
 
+def http_bytes(url: str, timeout: float = 30) -> bytes:
+    request = urllib.request.Request(url, method="GET", headers=client_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("detail", "")
+        except Exception:
+            pass
+        raise RuntimeError(redact(f"HTTP {exc.code} {url}: {detail or exc.reason}")) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"无法连接 {url}：{exc.reason}") from exc
+
+
+def download_task_image(base: str, task_id: str, filename: str, download_dir: str | None = None) -> Path:
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename or "/" in filename or "\\" in filename:
+        die(f"无效截图文件名：{filename}")
+    target_dir = (
+        Path(download_dir).expanduser().resolve()
+        if download_dir
+        else Path(tempfile.gettempdir()) / f"AI-Video-Note-frames-{Path(task_id).name}"
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    encoded_task = urllib.parse.quote(task_id, safe="")
+    encoded_file = urllib.parse.quote(safe_name, safe="")
+    content = http_bytes(f"{base}/api/image/{encoded_task}/{encoded_file}", timeout=60)
+    target_path = target_dir / safe_name
+    target_path.write_bytes(content)
+    return target_path
+
+
+def parse_float_list(raw: str, flag_name: str) -> list[float]:
+    parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if not parts:
+        die(f"请通过 {flag_name} 提供逗号分隔的数值列表")
+    try:
+        return [float(part) for part in parts]
+    except ValueError:
+        die(f"{flag_name} 包含无效数值：{raw}")
+
+
+def parse_int_list(raw: str, flag_name: str) -> list[int]:
+    parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if not parts:
+        die(f"请通过 {flag_name} 提供逗号分隔的整数列表")
+    try:
+        return [int(part) for part in parts]
+    except ValueError:
+        die(f"{flag_name} 包含无效整数：{raw}")
+
+
+def read_text_input(file_path: str | None, inline_value: str | None, label: str) -> str:
+    if file_path:
+        path = Path(file_path).expanduser()
+        if not path.is_file():
+            die(f"找不到{label}文件：{path}")
+        return path.read_text(encoding="utf-8")
+    if inline_value == "-":
+        return sys.stdin.read()
+    if inline_value is not None:
+        return inline_value
+    die(f"请提供{label}（可通过文件或 - 从标准输入读取）")
+
+
+def build_extra_summarize_fields(args) -> dict:
+    extra: dict = {}
+    if getattr(args, "format", None):
+        extra["note_format"] = args.format
+    if getattr(args, "note_language", None):
+        extra["note_language"] = args.note_language
+    if getattr(args, "text_detail", None):
+        extra["text_detail"] = args.text_detail
+    if getattr(args, "timeline_mode", None):
+        extra["timeline_mode"] = args.timeline_mode
+    if getattr(args, "source_link_position", None):
+        extra["source_link_position"] = args.source_link_position
+    if getattr(args, "ai_commentary_position", None):
+        extra["ai_commentary_position"] = args.ai_commentary_position
+        extra["ai_commentary"] = args.ai_commentary_position != "none"
+    elif getattr(args, "ai_commentary", False):
+        extra["ai_commentary"] = True
+    if getattr(args, "custom_prompt", None):
+        extra["custom_prompt"] = args.custom_prompt
+    if getattr(args, "save_dir", None):
+        extra["note_save_directory"] = args.save_dir
+    if getattr(args, "screenshot_density", None):
+        extra["screenshot_density"] = args.screenshot_density
+    if getattr(args, "vision_screenshots", False):
+        extra["vision_screenshots"] = True
+    if getattr(args, "auto_crop_screenshots", False):
+        extra["auto_crop_screenshots"] = True
+        extra["vision_screenshots"] = True
+    if getattr(args, "timed_screenshots", False):
+        extra["timed_screenshots"] = True
+    if getattr(args, "video_resolution", None):
+        extra["video_resolution"] = args.video_resolution
+    if getattr(args, "bilibili_pages", None):
+        extra["bilibili_pages"] = parse_int_list(args.bilibili_pages, "--bilibili-pages")
+    if getattr(args, "use_gpu", False):
+        extra["use_gpu"] = True
+    if getattr(args, "gpu_backend", None):
+        extra["gpu_backend"] = args.gpu_backend
+    vault = (getattr(args, "obsidian_vault", None) or "").strip()
+    if vault or getattr(args, "format", None) == "obsidian" or getattr(args, "style", None) == "obsidian":
+        if vault:
+            extra["obsidian"] = {
+                "vault": vault,
+                "note_folder": getattr(args, "obsidian_note_folder", "") or "",
+                "attachment_mode": getattr(args, "obsidian_attachment_mode", "note_subfolder") or "note_subfolder",
+                "attachment_folder": getattr(args, "obsidian_attachment_folder", "attachments") or "attachments",
+            }
+        if getattr(args, "obsidian_tags", False):
+            extra["obsidian_tags"] = True
+        if getattr(args, "obsidian_callouts", False):
+            extra["obsidian_callouts"] = True
+        if getattr(args, "no_obsidian_properties", False):
+            extra["obsidian_properties"] = False
+    return extra
+
+
+def run_agent_action(action: str, args) -> None:
+    base = find_service(auto_start=not args.no_auto_start)
+    if action == "list-jobs":
+        data = http_json("GET", f"{base}/api/agent/jobs", timeout=30)
+        print(json.dumps({"base_url": base, **data}, ensure_ascii=False, indent=2))
+        return
+
+    task_id = (args.task_id or "").strip()
+    if not task_id:
+        die(f"{action} 需要提供 --task-id <任务ID>")
+    encoded_task = urllib.parse.quote(task_id, safe="")
+
+    if action == "claim":
+        agent_label = AGENT_NAME or "AI-Video-Note-Skill"
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/claim",
+            {"agent_name": agent_label},
+            timeout=30,
+        )
+        print(json.dumps({"base_url": base, **data}, ensure_ascii=False, indent=2))
+        return
+
+    if action == "get-material":
+        offset = max(0, args.offset)
+        limit = max(1, min(args.limit, 500))
+        query = urllib.parse.urlencode({"offset": offset, "limit": limit})
+        packet = http_json("GET", f"{base}/api/agent/jobs/{encoded_task}?{query}", timeout=60)
+        if args.all_pages:
+            segments = list(packet.get("segments") or [])
+            next_offset = packet.get("next_offset")
+            while next_offset is not None:
+                page_query = urllib.parse.urlencode({"offset": next_offset, "limit": 500})
+                page = http_json("GET", f"{base}/api/agent/jobs/{encoded_task}?{page_query}", timeout=60)
+                segments.extend(page.get("segments") or [])
+                next_offset = page.get("next_offset")
+            packet["segments"] = segments
+            packet["next_offset"] = None
+        if args.out:
+            out_path = Path(args.out).expanduser().resolve()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding="utf-8")
+            summary = {
+                "task_id": packet.get("task_id"),
+                "title": packet.get("title"),
+                "saved_to": str(out_path),
+                "total_segments": packet.get("total_segments"),
+                "fetched_segments": len(packet.get("segments") or []),
+                "next_offset": packet.get("next_offset"),
+                "can_capture": packet.get("can_capture"),
+                "screenshots_count": len(packet.get("screenshots") or []),
+                "transcript_review": packet.get("transcript_review"),
+                "settings": packet.get("settings"),
+            }
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print(json.dumps(packet, ensure_ascii=False, indent=2))
+        return
+
+    if action == "report-issues":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("report-issues 需要提供 --claim-token")
+        if args.issues_file or args.issues_json is not None:
+            raw_issues = read_text_input(args.issues_file, args.issues_json, "校对疑点 JSON")
+            try:
+                parsed = json.loads(raw_issues)
+            except ValueError as exc:
+                die(f"校对疑点 JSON 解析失败：{exc}")
+            issues = parsed.get("issues") if isinstance(parsed, dict) and "issues" in parsed else parsed
+            if not isinstance(issues, list):
+                die("校对疑点必须是 JSON 数组，或包含 issues 数组的 JSON 对象")
+        else:
+            issues = []
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/transcript-issues",
+            {"claim_token": token, "issues": issues},
+            timeout=60,
+        )
+        if data.get("waiting_for_user"):
+            data["web_url"] = f"{base}{data.get('web_path', '/?task=' + task_id)}"
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "capture-screenshots":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("capture-screenshots 需要提供 --claim-token")
+        times = parse_float_list(args.times or "", "--times")
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/screenshots",
+            {"claim_token": token, "times": times},
+            timeout=LONG_HTTP_TIMEOUT_SECONDS,
+        )
+        local_map: dict[str, str] = {}
+        for item in data.get("screenshots") or []:
+            fname = item.get("filename")
+            if fname:
+                local_path = download_task_image(base, task_id, fname, args.download_dir)
+                item["local_path"] = str(local_path)
+                local_map[fname] = str(local_path)
+        for group in data.get("candidate_groups") or []:
+            group_files = []
+            for stamp in group.get("candidates") or []:
+                matched = next(
+                    (s for s in (data.get("screenshots") or []) if abs(float(s.get("time", -1)) - float(stamp)) < 1e-3),
+                    None,
+                )
+                if matched:
+                    group_files.append(
+                        {
+                            "time": stamp,
+                            "filename": matched.get("filename"),
+                            "markdown_ref": matched.get("markdown_ref"),
+                            "local_path": matched.get("local_path"),
+                        }
+                    )
+            if group_files:
+                group["candidate_files"] = group_files
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "fetch-image":
+        raw_names = [part.strip() for part in (args.filename or "").split(",") if part.strip()]
+        if not raw_names:
+            die("fetch-image 需要提供 --filename <文件名，多个用逗号分隔>")
+        images = []
+        for name in raw_names:
+            path = download_task_image(base, task_id, name, args.download_dir)
+            images.append({"filename": Path(name).name, "markdown_ref": f"frames/{Path(name).name}", "local_path": str(path)})
+        print(json.dumps({"task_id": task_id, "images": images}, ensure_ascii=False, indent=2))
+        return
+
+    if action == "crop-prepare":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("crop-prepare 需要提供 --claim-token")
+        filename = (args.filename or "").strip()
+        if not filename:
+            die("crop-prepare 需要提供 --filename <原图文件名>")
+        box = parse_float_list(args.box or "", "--box")
+        if len(box) != 4:
+            die("--box 必须是 4 个 0 到 1 之间的数值：left,top,right,bottom")
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/crop",
+            {"claim_token": token, "action": "prepare", "filename": filename, "box": box},
+            timeout=120,
+        )
+        if data.get("preview") and isinstance(data["preview"], dict):
+            orig_path = download_task_image(base, task_id, filename, args.download_dir)
+            prev_name = data["preview"].get("filename")
+            prev_path = download_task_image(base, task_id, prev_name, args.download_dir) if prev_name else None
+            data["original_local_path"] = str(orig_path)
+            if prev_path:
+                data["preview"]["local_path"] = str(prev_path)
+                data["preview_local_path"] = str(prev_path)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "crop-confirm":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("crop-confirm 需要提供 --claim-token")
+        filename = (args.filename or "").strip()
+        if not filename:
+            die("crop-confirm 需要提供 --filename <裁剪预览文件名>")
+        approved = bool(args.approved and not args.reject)
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/crop",
+            {
+                "claim_token": token,
+                "action": "confirm",
+                "filename": filename,
+                "approved": approved,
+                "context_complete": bool(args.context_complete and not args.reject),
+                "clearly_better": bool(args.clearly_better and not args.reject),
+            },
+            timeout=120,
+        )
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "renew-lease":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("renew-lease 需要提供 --claim-token")
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/lease",
+            {"claim_token": token, "release": bool(args.release)},
+            timeout=30,
+        )
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "submit-result":
+        token = (args.claim_token or "").strip()
+        if not token:
+            die("submit-result 需要提供 --claim-token")
+        markdown = read_text_input(args.markdown_file, args.markdown, "笔记正文 Markdown")
+        if not markdown.strip():
+            die("笔记正文不能为空")
+        data = http_json(
+            "POST",
+            f"{base}/api/agent/jobs/{encoded_task}/result",
+            {"claim_token": token, "markdown": markdown},
+            timeout=LONG_HTTP_TIMEOUT_SECONDS,
+        )
+        try:
+            task = http_json("GET", f"{base}/api/task/{encoded_task}", timeout=30)
+            task_result = task.get("result") or {}
+            summary_result = {k: v for k, v in task_result.items() if k != "markdown"}
+            data["result"] = summary_result
+            if task.get("export_status"):
+                data["export_status"] = task.get("export_status")
+            if task.get("export_warning"):
+                data["export_warning"] = task.get("export_warning")
+        except Exception:
+            pass
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if action == "wait-task":
+        task = (
+            poll_task(base, task_id, args.wait, block_on_user_review=True)
+            if getattr(args, "wait_for_user_confirm", False)
+            else poll_task(base, task_id, args.wait)
+        )
+        task_result = task.get("result") or {}
+        if args.out and task_result.get("markdown"):
+            Path(args.out).expanduser().write_text(task_result["markdown"], encoding="utf-8")
+        review_state = task.get("transcript_review") or {}
+        waiting_user = review_state.get("status") == "pending"
+        summary = {
+            "task_id": task_id,
+            "status": task.get("status"),
+            "step_name": task.get("step_name"),
+            "progress": task.get("progress"),
+            "waiting_for_user": waiting_user,
+            "transcript_review": task.get("transcript_review"),
+            "result": {k: v for k, v in task_result.items() if k != "markdown"},
+        }
+        if waiting_user:
+            summary["web_url"] = f"{base}/?task={task_id}"
+            summary["next"] = "请提醒用户打开 web_url 确认字幕修改；确认后再运行 wait-task 继续等待。"
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
+    if action == "get-transcript":
+        fmt = args.transcript_format or "markdown"
+        transcript = http_json(
+            "GET",
+            f"{base}/api/task/{encoded_task}/transcript?output_format={urllib.parse.quote(fmt, safe='')}",
+            timeout=60,
+        )
+        if args.out:
+            out_path = Path(args.out).expanduser()
+            if fmt == "markdown":
+                out_path.write_text(transcript.get("text") or "", encoding="utf-8")
+            else:
+                out_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[AI Video Note] 转录已保存：{out_path}")
+        elif fmt == "markdown":
+            print(transcript.get("text") or "")
+        else:
+            print(json.dumps(transcript, ensure_ascii=False, indent=2))
+        return
+
+
 def main() -> None:
     global AGENT_NAME
     try:
@@ -297,9 +737,21 @@ def main() -> None:
     except Exception:
         pass
 
-    parser = argparse.ArgumentParser(description="AI Video Note：视频 → 带时间轴的 Markdown 笔记")
-    parser.add_argument("source", help="视频链接（B站/抖音/YouTube）或本地媒体文件路径")
-    parser.add_argument("--style", choices=["detailed", "faithful", "concise"], default="detailed")
+    parser = argparse.ArgumentParser(description="AI Video Note：视频 → 带时间轴的 Markdown 笔记与 Agent 队列工具")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default="",
+        help=f"视频链接（B站/抖音/YouTube）、本地媒体文件路径，或 Agent 动作（{', '.join(AGENT_ACTIONS)}）",
+    )
+    parser.add_argument("--action", choices=AGENT_ACTIONS, default=None, help="执行指定的 Agent 队列/截图/裁剪/回传动作")
+    parser.add_argument("--style", choices=STYLES, default="detailed")
+    parser.add_argument(
+        "--agent-note",
+        action="store_true",
+        help="以 Agent 模式创建笔记任务（使用调用方自身的模型生成笔记、配图并回传导出，无需软件 API Key）",
+    )
+    parser.add_argument("--claim", action="store_true", help="创建 Agent 任务 reaching awaiting_agent 后自动领取并返回 claim_token")
     parser.add_argument(
         "--transcript-only",
         action="store_true",
@@ -309,7 +761,7 @@ def main() -> None:
     parser.add_argument(
         "--no-reuse",
         action="store_true",
-        help="禁止复用同链接已有转录，强制重新转写（默认只在笔记模式从头处理）",
+        help="禁止复用同链接已有转录，强制重新转写（默认只在 API 笔记模式从头处理）",
     )
     parser.add_argument("--provider", default=None, help=f"大模型供应商：{', '.join(sorted(PROVIDERS))}")
     parser.add_argument(
@@ -323,35 +775,99 @@ def main() -> None:
     parser.add_argument("--base-url", default=None, help="custom 供应商的接口地址")
     parser.add_argument("--custom-model", default=None, help="custom 供应商的模型名")
     parser.add_argument("--whisper-model", default="base", help="本地转写模型（默认 base）")
+    parser.add_argument("--use-gpu", action="store_true", help="启用显卡加速本地语音转写")
+    parser.add_argument("--gpu-backend", choices=["auto", "cuda", "amd", "intel", "vulkan"], default=None)
     parser.add_argument("--include-screenshots", action="store_true", help="提取视频截图")
+    parser.add_argument("--screenshot-density", choices=SCREENSHOT_DENSITIES, default=None, help="AI 配图密度：none/few/medium/many")
+    parser.add_argument("--vision-screenshots", action="store_true", help="开启视觉核对候选截图（每时间点提取多张候选供看图筛选）")
+    parser.add_argument("--auto-crop-screenshots", action="store_true", help="开启截图保守区域裁剪（自动同时开启视觉核对）")
+    parser.add_argument("--timed-screenshots", action="store_true", help="按固定时间间隔提取截图，替代 AI 选点")
     parser.add_argument("--screenshot-interval", type=int, default=30)
-    parser.add_argument("--wait", type=int, default=1800, help="最长等待秒数（默认 1800）")
-    parser.add_argument("--out", default=None, help="把笔记写入该 Markdown 文件")
+    parser.add_argument("--video-resolution", type=int, choices=[360, 480, 720, 1080], default=None, help="截图视频清晰度（默认 720）")
+    parser.add_argument("--format", "--note-format", dest="format", choices=NOTE_FORMATS, default=None, help="笔记导出格式（markdown/docx/pdf/enex/html/txt/png/json/obsidian）")
+    parser.add_argument("--note-language", choices=NOTE_LANGUAGES, default=None, help="笔记语言：zh-CN 或 en")
+    parser.add_argument("--text-detail", choices=TEXT_DETAILS, default=None, help="文字详略：brief/standard/detailed")
+    parser.add_argument("--timeline-mode", choices=TIMELINE_MODES, default=None, help="时间线位置：none/heading/paragraph_start/paragraph_end/all")
+    parser.add_argument("--source-link-position", choices=POSITIONS, default=None, help="原视频链接位置：none/start/end")
+    parser.add_argument("--ai-commentary", action="store_true", help="包含独立 AI 点评")
+    parser.add_argument("--ai-commentary-position", choices=POSITIONS, default=None, help="独立 AI 点评位置：none/start/end")
+    parser.add_argument("--custom-prompt", default=None, help="生成笔记的自定义提示词要求")
+    parser.add_argument("--save-dir", default=None, help="导出笔记保存目录的绝对路径")
+    parser.add_argument("--obsidian-vault", default=None, help="Obsidian 仓库根目录绝对路径")
+    parser.add_argument("--obsidian-note-folder", default="", help="Obsidian 笔记相对目录")
+    parser.add_argument("--obsidian-attachment-mode", choices=OBSIDIAN_ATTACHMENT_MODES, default="note_subfolder")
+    parser.add_argument("--obsidian-attachment-folder", default="attachments")
+    parser.add_argument("--obsidian-tags", action="store_true", help="启用 Obsidian 标签")
+    parser.add_argument("--obsidian-callouts", action="store_true", help="启用 Obsidian Callouts")
+    parser.add_argument("--no-obsidian-properties", action="store_true", help="禁用 Obsidian 属性块")
+    parser.add_argument("--bilibili-pages", default=None, help="B 站多分 P 页码，逗号分隔（如 1,2,3）")
+    parser.add_argument("--wait", type=int, default=DEFAULT_WAIT_SECONDS, help=f"最长等待秒数（默认 {DEFAULT_WAIT_SECONDS}）")
+    parser.add_argument("--wait-for-user-confirm", action="store_true", help="遇到待用户确认字幕时不立即退出，继续在终端阻塞等待")
+    parser.add_argument("--out", default=None, help="把结果写入该文件")
     parser.add_argument("--no-auto-start", action="store_true", help="不自动启动后台服务")
     parser.add_argument("--agent-name", default=AGENT_NAME, help="调用此 Skill 的 Agent 名称（用于界面显示）")
+
+    # Agent 队列与截图/裁剪/回传专用参数
+    parser.add_argument("--task-id", default="", help="目标任务 ID")
+    parser.add_argument("--claim-token", default="", help="claim 返回的领取令牌")
+    parser.add_argument("--offset", type=int, default=0, help="get-material 分页起始偏移（默认 0）")
+    parser.add_argument("--limit", type=int, default=100, help="get-material 单页条数（默认 100，最大 500）")
+    parser.add_argument("--all-pages", action="store_true", help="get-material 自动拉取并合并全部分页字幕")
+    parser.add_argument("--issues-file", default=None, help="report-issues 的 JSON 文件路径")
+    parser.add_argument("--issues-json", default=None, help="report-issues 的 JSON 字符串（或 - 从标准输入读）")
+    parser.add_argument("--times", default=None, help="capture-screenshots 的截图时间点（秒），逗号分隔，如 12.5,45,90")
+    parser.add_argument("--filename", default=None, help="fetch-image / crop-prepare / crop-confirm 的截图文件名")
+    parser.add_argument("--box", default=None, help="crop-prepare 的归一化裁剪框：left,top,right,bottom（0~1）")
+    parser.add_argument("--approved", action="store_true", help="crop-confirm 确认采用该裁剪预览")
+    parser.add_argument("--reject", action="store_true", help="crop-confirm 拒绝裁剪预览并保留原图")
+    parser.add_argument("--context-complete", action="store_true", help="crop-confirm 确认必要上下文完整")
+    parser.add_argument("--clearly-better", action="store_true", help="crop-confirm 确认裁剪后明显优于全图")
+    parser.add_argument("--download-dir", default=None, help="截图下载保存目录（供 Agent 用 read_file 查看图片）")
+    parser.add_argument("--release", action="store_true", help="renew-lease 释放任务领取状态")
+    parser.add_argument("--markdown-file", default=None, help="submit-result 的 Markdown 正文文件路径")
+    parser.add_argument("--markdown", default=None, help="submit-result 的 Markdown 正文内容（或 - 从标准输入读）")
+    parser.add_argument("--transcript-format", choices=["markdown", "json"], default="markdown", help="get-transcript 输出格式")
+
     args = parser.parse_args()
     AGENT_NAME = args.agent_name
+
+    action = args.action
+    if not action and args.source in AGENT_ACTIONS:
+        action = args.source
+    if action:
+        try:
+            run_agent_action(action, args)
+        except RuntimeError as exc:
+            die(str(exc))
+        return
+
+    if not args.source:
+        die("请提供视频链接、本地文件路径，或指定 Agent 动作（如 list-jobs / claim / get-material / submit-result）")
 
     if args.provider and args.provider not in PROVIDERS:
         die(f"不支持的供应商：{args.provider}（可选：{', '.join(sorted(PROVIDERS))}）")
     if args.provider == "custom" and not (args.base_url and args.custom_model):
         die("custom 供应商需要 --base-url 和 --custom-model")
     transcript_only = args.transcript_only
+    agent_note = args.agent_note
+    if transcript_only and agent_note:
+        die("--transcript-only 与 --agent-note 不能同时使用")
     if args.review_agent and not transcript_only:
         die('--review-agent 需与 --transcript-only 一起使用')
-    if transcript_only and args.include_screenshots:
-        die('仅转录字幕不做截图，请去掉 --include-screenshots')
+    if transcript_only and (args.include_screenshots or args.screenshot_density not in (None, "none") or args.vision_screenshots or args.auto_crop_screenshots or args.timed_screenshots):
+        die('仅转录字幕不做截图，请去掉截图相关参数')
 
     base = find_service(auto_start=not args.no_auto_start)
     print(f"[AI Video Note] 服务已连接：{base}")
 
-    api_key = '' if args.review_agent else resolve_api_key(args)
+    use_agent_mode = bool(args.review_agent or agent_note)
+    api_key = '' if use_agent_mode else resolve_api_key(args)
     if api_key: remember_secret(api_key)
     llm_config = {'model_type': args.provider or 'deepseek'}
     if api_key: llm_config['api_key'] = api_key
     if args.base_url: llm_config['base_url'] = args.base_url
     if args.custom_model: llm_config['model'] = args.custom_model
-    if not args.review_agent and not api_key and not args.provider:
+    if not use_agent_mode and not api_key and not args.provider:
         llm_config = pick_saved_channel(base) or llm_config
     source_path = Path(args.source)
     if transcript_only:
@@ -364,17 +880,27 @@ def main() -> None:
             "agent_execution": 'manual',
             "llm_config": {} if args.review_agent else llm_config,
         }
+        if args.bilibili_pages:
+            payload["bilibili_pages"] = parse_int_list(args.bilibili_pages, "--bilibili-pages")
+        if args.use_gpu:
+            payload["use_gpu"] = True
+        if args.gpu_backend:
+            payload["gpu_backend"] = args.gpu_backend
     else:
         endpoint = "/api/summarize"
         payload = {
             "summary_style": args.style,
             "prefer_subtitles": True,
-            "processing_mode": "restart",
+            "processing_mode": ("restart" if args.no_reuse else "reuse") if agent_note else "restart",
             "whisper_model": args.whisper_model,
             "include_screenshots": args.include_screenshots,
             "screenshot_interval": max(5, min(300, args.screenshot_interval)),
-            "llm_config": llm_config,
+            "llm_config": {} if agent_note else llm_config,
         }
+        if agent_note:
+            payload["generation_mode"] = "agent"
+            payload["agent_execution"] = "manual"
+        payload.update(build_extra_summarize_fields(args))
 
     if source_path.is_file():
         payload["upload_task_id"] = upload_file(base, source_path)
@@ -388,12 +914,12 @@ def main() -> None:
     try:
         result = http_json("POST", f"{base}{endpoint}", payload, timeout=60)
     except RuntimeError as exc:
-        if transcript_only:
+        if transcript_only or agent_note:
             die(f"提交失败：{exc}")
         if "API Key" in str(exc) or "422" in str(exc):
             die(
                 f"提交失败：{exc}\n提示：该接口地址本机没有可复用的 Key。可用"
-                " --transcript-only --review-agent 由你校对；使用API时，"
+                " --agent-note（生成笔记/配图/多格式导出）或 --transcript-only --review-agent（仅字幕）由你处理；使用API时，"
                 f"让用户把 Key 交给环境变量 {API_KEY_ENV} 或以 --api-key - 从标准输入传入"
                 "（配合 --provider，custom 另需 --base-url/--custom-model）。"
                 "不要把 Key 写进命令行参数。",
@@ -408,10 +934,44 @@ def main() -> None:
         print(f"[AI Video Note] 已复用任务 {result['reused_task_id']} 的转录结果")
     print(f"[AI Video Note] 任务已创建：{task_id}，开始等待完成…")
 
-    task = poll_task(base, task_id, args.wait)
+    task = (
+        poll_task(base, task_id, args.wait, block_on_user_review=True)
+        if getattr(args, "wait_for_user_confirm", False)
+        else poll_task(base, task_id, args.wait)
+    )
+    if (task.get('transcript_review') or {}).get('status') == 'pending':
+        print(json.dumps({
+            'task_id': task_id,
+            'status': task.get('status'),
+            'waiting_for_user': True,
+            'base_url': base,
+            'web_url': f'{base}/?task={task_id}',
+            'next': '请提醒用户打开 web_url 在网页确认字幕修改；用户确认后运行 wait-task --task-id <ID> 继续等待完成。',
+        }, ensure_ascii=False))
+        return
     if task.get('status') == 'awaiting_agent':
-        print(json.dumps({'task_id': task_id, 'status': 'awaiting_agent', 'base_url': base,
-                          'next': '领取 /api/agent/jobs/{task_id}/claim，读取全部分页材料，再提交 transcript-issues；等待用户确认后取字幕。'}, ensure_ascii=False))
+        output_payload = {
+            'task_id': task_id,
+            'status': 'awaiting_agent',
+            'base_url': base,
+            'mode': 'agent_note' if agent_note else 'transcript_review',
+            'next': (
+                '执行 claim 领取任务 -> get-material --all-pages 读取字幕与提示词 -> report-issues 上报字幕校对结果 -> '
+                '(如需配图) capture-screenshots / crop-prepare / crop-confirm -> submit-result 回传笔记并完成导出。'
+                if agent_note
+                else '领取 /api/agent/jobs/{task_id}/claim，读取全部分页材料，再提交 transcript-issues；等待用户确认后取字幕。'
+            ),
+        }
+        if args.claim:
+            claim_data = http_json(
+                "POST",
+                f"{base}/api/agent/jobs/{urllib.parse.quote(task_id, safe='')}/claim",
+                {"agent_name": AGENT_NAME or "AI-Video-Note-Skill"},
+                timeout=30,
+            )
+            output_payload["claim_token"] = claim_data.get("claim_token")
+            output_payload["lease_seconds"] = claim_data.get("lease_seconds")
+        print(json.dumps(output_payload, ensure_ascii=False))
         return
     task_result = task.get("result") or {}
 

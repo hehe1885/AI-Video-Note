@@ -1,7 +1,53 @@
 """Video orchestration with explicitly injected application services."""
 from __future__ import annotations
+import inspect
 from .video_processor import BiliSubtitleOutcome, select_bilibili_pages
 from .task_exports import archive_outputs
+
+
+async def _run_task_transcription(runtime, task, media_path, request, title: str, page_prefix: str = ""):
+    loading_message = (
+        f"正在转写{page_prefix.strip()}（{request.whisper_model} 模型）"
+        if page_prefix
+        else f"正在加载 {request.whisper_model}（未缓存时可能下载模型）"
+    )
+    runtime.set_progress(task, 4, "语音转写", 38, loading_message)
+
+    def on_wait() -> None:
+        runtime.set_progress(
+            task, 4, "语音转写", 38, f"{page_prefix}正在排队等待前序视频完成语音转写"
+        )
+        task["logs"].append(
+            f"{page_prefix}已有其他任务正在运行本地语音转写，正在排队等待释放"
+        )
+
+    def on_ready() -> None:
+        runtime.set_progress(task, 4, "语音转写", 38, loading_message)
+
+    kwargs = {
+        "progress_callback": runtime.transcribe_progress_reporter(
+            task, request.whisper_model, page_prefix
+        )
+    }
+    if request.use_gpu and request.gpu_backend != "cuda":
+        kwargs["gpu_backend"] = request.gpu_backend
+    try:
+        params = inspect.signature(runtime.run_transcription).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "waiting_callback" in params:
+        kwargs["waiting_callback"] = on_wait
+    if "ready_callback" in params:
+        kwargs["ready_callback"] = on_ready
+
+    return await runtime.run_transcription(
+        media_path,
+        request.whisper_model,
+        request.use_gpu,
+        title,
+        task.get("_cancel_event"),
+        **kwargs,
+    )
 
 
 def _apply_bilibili_metadata(runtime, task_id, info, outcome):
@@ -242,23 +288,8 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
                     )
                     note_api_fallback()
                     runtime.raise_if_cancel_requested(task)
-                    runtime.set_progress(
-                        task,
-                        4,
-                        "语音转写",
-                        38,
-                        f"正在转写分 P {page.page}（{request.whisper_model} 模型）",
-                    )
-                    whisper_result = await runtime.run_transcription(
-                        media_path,
-                        request.whisper_model,
-                        request.use_gpu,
-                        title,
-                        task.get("_cancel_event"),
-                        progress_callback=runtime.transcribe_progress_reporter(
-                            task, request.whisper_model, f"分 P {page.page} "
-                        ),
-                        **({"gpu_backend": request.gpu_backend} if request.use_gpu and request.gpu_backend != "cuda" else {}),
+                    whisper_result = await _run_task_transcription(
+                        runtime, task, media_path, request, title, f"分 P {page.page} "
                     )
                     runtime.raise_if_cancel_requested(task)
                     whisper_by_page[page.page] = whisper_result
@@ -316,23 +347,8 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
                     )
                 runtime.raise_if_cancel_requested(task)
                 note_api_fallback()
-                runtime.set_progress(
-                    task,
-                    4,
-                    "语音转写",
-                    38,
-                    f"正在加载 {request.whisper_model}（未缓存时可能下载模型）",
-                )
-                whisper_result = await runtime.run_transcription(
-                    media_path,
-                    request.whisper_model,
-                    request.use_gpu,
-                    title,
-                    task.get("_cancel_event"),
-                    progress_callback=runtime.transcribe_progress_reporter(
-                        task, request.whisper_model
-                    ),
-                    **({"gpu_backend": request.gpu_backend} if request.use_gpu and request.gpu_backend != "cuda" else {}),
+                whisper_result = await _run_task_transcription(
+                    runtime, task, media_path, request, title
                 )
                 runtime.raise_if_cancel_requested(task)
                 transcript_result = {
@@ -694,6 +710,8 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
         runtime.persist_task_runtime(task_id)
     except runtime.asyncio.CancelledError:
         runtime.finish_task_timing(task)
+        if isinstance(task.get("transcript_review"), dict) and task["transcript_review"].get("status") == "pending":
+            task["transcript_review"] = None
         task.update(status="cancelled", step_name="已取消", error=None)
         if not task["logs"] or "用户已取消任务" not in task["logs"][-1]:
             task["logs"].append("任务已取消；已生成的中间文件将保留")
@@ -702,6 +720,8 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
         from . import detailed_logs
         detailed_logs.event('task.error', stage=task.get('step_name'), error=exc, secrets=(used_api_key,))
         runtime.finish_task_timing(task)
+        if isinstance(task.get("transcript_review"), dict) and task["transcript_review"].get("status") == "pending":
+            task["transcript_review"] = None
         raw = str(exc)
         # 失败文案有三条出口（error 字段、任务日志、系统通知），未知异常时
         # friendly_* 会原样返回底层文本，网关回显的明文 Key 就会跟着落进 task.json

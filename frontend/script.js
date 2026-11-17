@@ -430,6 +430,11 @@ function bindEvents() {
                 deleteStoppedTask(deleteButton.dataset.deleteTaskId);
                 return;
             }
+            const cancelButton = event.target.closest('[data-cancel-task-id]');
+            if (cancelButton) {
+                cancelTaskById?.(cancelButton.dataset.cancelTaskId);
+                return;
+            }
             const button = event.target.closest('[data-task-id]');
             if (button) openRecentTask(button.dataset.taskId);
         });
@@ -482,6 +487,7 @@ function bindEvents() {
     if (videoUrl) {
         videoUrl.addEventListener('input', () => {
             resetSubmitLabel(true);
+            updateClearVideoUrlButton();
             window.clearTimeout(biliHintDebounce);
             biliHintDebounce = window.setTimeout(() => updateBiliHint(), 300);
             scheduleBiliPagesPreview();
@@ -490,6 +496,8 @@ function bindEvents() {
             if (event.key === 'Enter' && !event.isComposing && !byId('updateModal')?.open) startSummary();
         });
     }
+    bindListener('clearVideoUrlBtn', 'click', clearVideoUrlForNextTask);
+    updateClearVideoUrlButton();
     bindListener('biliHintScanBtn', 'click', startBiliLogin);
     bindListener('biliHintManualBtn', 'click', revealBiliCredentials);
     bindListener('douyinLoginBtn', 'click', startDouyinLogin);
@@ -513,11 +521,23 @@ function bindEvents() {
         resetSubmitLabel(true);
     });
     initThemeControl();
+    byId('videoUrl')?.addEventListener('input', () => { sourceDraftDirty = true; });
+    byId('localFile')?.addEventListener('change', () => {
+        sourceDraftDirty = Boolean(byId('localFile')?.files?.length);
+    });
+    if (typeof window !== 'undefined') {
+        window.addEventListener('ui-language-changed', () => syncDocumentTitle());
+        window.addEventListener('resize', () => {
+            if (typeof syncRecentTaskListHeight === 'function') syncRecentTaskListHeight();
+        });
+        syncDocumentTitle();
+    }
     window.addEventListener('beforeunload', () => {
         stopPolling();
         stopElapsedTimer();
         stopDouyinLoginPolling();
         stopManualImportPolling();
+        stopBackgroundTaskSync();
     });
 }
 
@@ -554,16 +574,271 @@ const DELETABLE_TASK_STATUSES = ['completed', 'failed', 'cancelled', 'uploaded',
 const LIVE_TASK_STATUSES = ['pending', 'queued', 'processing', 'cancelling'];
 // 上传后一直没提交的任务：elapsed 同样从创建起算，显示出来只是个虚构的数字，不如不提
 const NO_ELAPSED_TASK_STATUSES = ['uploaded'];
+let sourceDraftDirty = false;
 let recentTaskRows = new Map();
 let recentTasksSyncedAt = 0;
 let recentTasksElapsedTimer = null;
+const BACKGROUND_TASK_SYNC_MS = 2000;
+const MAX_BACKGROUND_SYNC_ERRORS = 5;
+let backgroundTaskSyncTimer = null;
+let backgroundTaskSyncBusy = false;
+let backgroundTaskSyncErrors = 0;
+let backgroundTaskSnapshot = new Map();
+
+function stopBackgroundTaskSync() {
+    if (backgroundTaskSyncTimer !== null) {
+        window.clearTimeout(backgroundTaskSyncTimer);
+        backgroundTaskSyncTimer = null;
+    }
+}
+
+function scheduleBackgroundTaskSync(delay = BACKGROUND_TASK_SYNC_MS) {
+    stopBackgroundTaskSync();
+    backgroundTaskSyncTimer = window.setTimeout(() => {
+        backgroundTaskSyncTimer = null;
+        syncActiveTasks();
+    }, delay);
+}
+
+function syncDocumentTitle() {
+    if (typeof document === 'undefined') return;
+    const trText = (text, ...args) => (typeof formatConcurrencyText === 'function'
+        ? formatConcurrencyText(text, ...args)
+        : (window.AIVideoNoteI18n?.translate?.(text) || text));
+    const baseTitle = window.AIVideoNoteI18n?.translate?.('AI Video Note - 本地视频笔记') || 'AI Video Note - 本地视频笔记';
+    if (typeof window !== 'undefined' && window.hasPendingTranscriptReview?.()) {
+        document.title = `${trText('【待核对字幕】')}${baseTitle}`;
+        return;
+    }
+    const count = typeof activeTaskCount === 'function' ? activeTaskCount() : 0;
+    const limit = Math.max(1, typeof maxConcurrentTasks !== 'undefined' ? (Number(maxConcurrentTasks) || 3) : 3);
+    if (count > 0) {
+        document.title = `${trText('（正在处理 {0}/{1}）', count, limit)}${baseTitle}`;
+        return;
+    }
+    document.title = baseTitle;
+}
+if (typeof window !== 'undefined') window.syncDocumentTitle = syncDocumentTitle;
+
+function updateClearVideoUrlButton() {
+    const btn = byId('clearVideoUrlBtn');
+    const input = byId('videoUrl');
+    if (!btn || !input) return;
+    btn.hidden = isLocalSource() || !input.value.trim();
+    const limitReached = typeof atConcurrentTaskLimit === 'function' && atConcurrentTaskLimit();
+    btn.disabled = Boolean((typeof isSubmitting !== 'undefined' && isSubmitting) || limitReached);
+}
+
+function clearVideoUrlForNextTask(event) {
+    event?.preventDefault?.();
+    const input = byId('videoUrl');
+    if (!input) return;
+    input.value = '';
+    sourceDraftDirty = true;
+    biliPagesToken += 1;
+    window.clearTimeout(biliPagesDebounce);
+    hideBiliPagesPanel();
+    resetSubmitLabel(true);
+    updateBiliHint();
+    updateClearVideoUrlButton();
+    input.focus?.();
+}
+
+function renderActiveTasksBadge() {
+    syncDocumentTitle();
+    const badge = byId('activeTasksBadge');
+    if (!badge) return;
+    const count = activeTaskCount();
+    const limit = Math.max(1, Number(maxConcurrentTasks) || DEFAULT_MAX_CONCURRENT_TASKS);
+    badge.hidden = count <= 0;
+    badge.textContent = count > 0 ? formatConcurrencyText('正在处理 {0}/{1}', count, limit) : '';
+}
+
+function syncCurrentRecentTaskHighlight() {
+    recentTaskRows.forEach((entry, id) => {
+        entry.row?.classList?.toggle?.('is-current', Boolean(currentTaskId && id === currentTaskId));
+    });
+}
+
+function recentTaskStatusInfo(task) {
+    const reviewPending = task?.transcript_review?.status === 'pending'
+        && ['processing', 'awaiting_agent'].includes(task?.status);
+    if (reviewPending) {
+        return { cls: 'review_pending', text: formatConcurrencyText('待确认字幕') };
+    }
+    const rawLabel = TASK_STATUS_LABELS[task?.status] || task?.step_name || '未知';
+    const baseLabel = window.AIVideoNoteI18n?.translate?.(rawLabel) || rawLabel;
+    const progress = Number(task?.progress);
+    if (task?.status === 'processing' && Number.isFinite(progress) && progress > 0 && progress < 100) {
+        return { cls: task.status || '', text: `${baseLabel} ${Math.round(progress)}%` };
+    }
+    return { cls: task?.status || '', text: baseLabel };
+}
+
+function applyRecentTaskStatus(statusEl, task) {
+    if (!statusEl) return;
+    const info = recentTaskStatusInfo(task);
+    statusEl.className = `recent-task-status ${info.cls}`.trim();
+    statusEl.textContent = info.text;
+}
+
+function updateLiveHistoryRows(activeRows) {
+    const now = Date.now() / 1000;
+    const byIdMap = new Map((activeRows || []).map(item => [item.task_id, {...item, _syncedAt: item._syncedAt ?? now}]));
+    if (Array.isArray(historyItems) && historyItems.length) {
+        historyItems = historyItems.map(item => {
+            const live = byIdMap.get(item?.task_id);
+            return live ? {...item, ...live} : item;
+        });
+    }
+    recentTaskRows.forEach((entry, taskId) => {
+        const live = byIdMap.get(taskId);
+        if (!live) return;
+        entry.task = {...entry.task, ...live};
+        entry.meta.textContent = recentTaskMetaText(entry.task, now);
+        applyRecentTaskStatus(entry.status, entry.task);
+        if (entry.cancelBtn) {
+            const cancelling = entry.task.status === 'cancelling'
+                || (typeof backgroundCancellingIds !== 'undefined' && backgroundCancellingIds.has(taskId))
+                || (typeof cancellationTaskId !== 'undefined' && cancellationTaskId === taskId);
+            entry.cancelBtn.disabled = Boolean(cancelling);
+        }
+    });
+    armRecentTasksElapsedTicker();
+    syncRecentTaskListHeight();
+}
+
+function reconcileActiveTasksFromHistory(tasks, options = {}) {
+    const rows = Array.isArray(tasks) ? tasks : [];
+    const prevActiveSize = activeTasksMap.size;
+    const liveIds = new Set();
+    for (const task of rows) {
+        if (!task?.task_id) continue;
+        if (isLiveTaskStatus(task.status)) {
+            liveIds.add(task.task_id);
+            const prev = activeTasksMap.get(task.task_id) || {};
+            activeTasksMap.set(task.task_id, {...prev, ...task});
+            backgroundTaskSnapshot.set(task.task_id, {
+                status: task.status,
+                reviewStatus: task.transcript_review?.status || '',
+                title: task.title || task.video_title || task.task_id
+            });
+        } else {
+            activeTasksMap.delete(task.task_id);
+            backgroundTaskSnapshot.delete(task.task_id);
+            window.clearTranscriptReviewTask?.(task.task_id);
+        }
+    }
+    if (options.authoritative) {
+        for (const existingId of Array.from(activeTasksMap.keys())) {
+            if (!liveIds.has(existingId)) {
+                activeTasksMap.delete(existingId);
+                backgroundTaskSnapshot.delete(existingId);
+            }
+        }
+    }
+    if (prevActiveSize > 0 || activeTasksMap.size > 0) {
+        syncConcurrencyControls();
+        if (!isSubmitting) resetSubmitLabel();
+    }
+    renderActiveTasksBadge();
+    window.syncTranscriptReviewBatch?.(rows, { prune: Boolean(options.authoritative) });
+    if (hasAnyActiveTask()) {
+        if (backgroundTaskSyncTimer === null && !backgroundTaskSyncBusy) scheduleBackgroundTaskSync();
+    } else {
+        stopBackgroundTaskSync();
+    }
+}
+
+async function syncActiveTasks() {
+    if (backgroundTaskSyncBusy) return;
+    backgroundTaskSyncBusy = true;
+    try {
+        const response = await fetch(`${API_BASE}/tasks?status=active&limit=20`, {cache: 'no-store'});
+        const data = await readResponse(response, '同步运行中任务失败');
+        if (data.max_concurrent_tasks !== undefined) setMaxConcurrentTasks(data.max_concurrent_tasks);
+        const syncedNow = Date.now() / 1000;
+        const activeRows = (Array.isArray(data.tasks) ? data.tasks : []).map(task => ({...task, _syncedAt: syncedNow}));
+        const activeById = new Map(activeRows.map(item => [item.task_id, item]));
+        const finishedItems = [];
+        let changed = false;
+
+        for (const [prevId, prevInfo] of backgroundTaskSnapshot.entries()) {
+            if (!activeById.has(prevId)) {
+                finishedItems.push({task_id: prevId, ...prevInfo});
+                changed = true;
+            }
+        }
+        for (const task of activeRows) {
+            const prev = backgroundTaskSnapshot.get(task.task_id);
+            const reviewStatus = task.transcript_review?.status || '';
+            if (!prev || prev.status !== task.status || prev.reviewStatus !== reviewStatus) {
+                changed = true;
+            }
+        }
+
+        backgroundTaskSnapshot = new Map(activeRows.map(task => [task.task_id, {
+            status: task.status,
+            reviewStatus: task.transcript_review?.status || '',
+            title: task.title || task.video_title || task.task_id
+        }]));
+
+        // Server rows are compact (no source_url / filename): keep what this tab recorded at
+        // submission time, otherwise the duplicate-submission guard forgets the source.
+        const previousRows = new Map(activeTasksMap);
+        activeTasksMap.clear();
+        activeRows.forEach(task => {
+            if (task?.task_id && isLiveTaskStatus(task.status)) {
+                activeTasksMap.set(task.task_id, {...(previousRows.get(task.task_id) || {}), ...task});
+            }
+        });
+        syncConcurrencyControls();
+        if (!isSubmitting) resetSubmitLabel();
+        renderActiveTasksBadge();
+        updateLiveHistoryRows(activeRows);
+        window.syncTranscriptReviewBatch?.(activeRows, { prune: true });
+
+        if (changed) await loadRecentTasks(true);
+
+        backgroundTaskSyncErrors = 0;
+        for (const finished of finishedItems) {
+            if (finished.task_id === currentTaskId) {
+                if (typeof schedulePoll === 'function') schedulePoll(currentTaskId, 0);
+                continue;
+            }
+            let latest = historyItems.find(item => item.task_id === finished.task_id);
+            if (!latest) {
+                try {
+                    const detailResp = await fetch(`${API_BASE}/task/${encodeURIComponent(finished.task_id)}`, {cache: 'no-store'});
+                    if (detailResp?.ok) latest = await detailResp.json();
+                } catch { /* ignore fallback lookup failure */ }
+            }
+            const title = latest?.title || latest?.result?.title || finished.title || finished.task_id;
+            if (latest?.status === 'completed') {
+                showToast(formatConcurrencyText('后台任务已完成：{0}', title), 'success');
+            } else if (latest?.status === 'failed') {
+                showToast(formatConcurrencyText('后台任务未完成：{0}', title), 'warning');
+            }
+        }
+    } catch {
+        backgroundTaskSyncErrors += 1;
+    } finally {
+        backgroundTaskSyncBusy = false;
+        if (hasAnyActiveTask() && backgroundTaskSyncErrors < MAX_BACKGROUND_SYNC_ERRORS) {
+            scheduleBackgroundTaskSync();
+        } else {
+            stopBackgroundTaskSync();
+        }
+    }
+}
 
 function recentTaskMetaText(task, nowSeconds) {
     const created = formatTaskDate(task.created_at);
     if (NO_ELAPSED_TASK_STATUSES.includes(task.status)) return created;
     const live = LIVE_TASK_STATUSES.includes(task.status);
     const base = Number(task.elapsed_seconds) || 0;
-    const elapsed = formatElapsedCompact(live ? base + Math.max(0, nowSeconds - recentTasksSyncedAt) : base);
+    const syncedAt = Number.isFinite(Number(task?._syncedAt)) ? Number(task._syncedAt) : recentTasksSyncedAt;
+    const elapsed = formatElapsedCompact(live ? base + Math.max(0, nowSeconds - syncedAt) : base);
     if (!elapsed) return created;
     return [created, `${live ? '已用时' : '共耗时'} ${elapsed}`].filter(Boolean).join(' · ');
 }
@@ -614,15 +889,27 @@ async function loadRecentTasks(silent = false, append = false) {
         const response = await fetch(`${API_BASE}/tasks?${query}`, {cache: 'no-store'});
         const data = await readResponse(response, '读取最近任务失败');
         if (sequence !== historyRequestSequence) return;
-        const page = Array.isArray(data.tasks) ? data.tasks : [];
+        backgroundTaskSyncErrors = 0;
+        if (data.max_concurrent_tasks !== undefined && typeof setMaxConcurrentTasks === 'function') {
+            setMaxConcurrentTasks(data.max_concurrent_tasks);
+        }
+        const syncedNow = Date.now() / 1000;
+        const page = (Array.isArray(data.tasks) ? data.tasks : []).map(task => ({...task, _syncedAt: syncedNow}));
         if (append) {
-            const elapsed = Math.max(0, Date.now()/1000 - recentTasksSyncedAt);
-            historyItems = historyItems.map(task => LIVE_TASK_STATUSES.includes(task.status)
-                ? {...task, elapsed_seconds:(Number(task.elapsed_seconds)||0)+elapsed} : task);
+            historyItems = historyItems.map(task => {
+                if (!LIVE_TASK_STATUSES.includes(task.status)) return task;
+                const syncedAt = Number.isFinite(Number(task?._syncedAt)) ? Number(task._syncedAt) : recentTasksSyncedAt;
+                const elapsed = Math.max(0, syncedNow - syncedAt);
+                return {...task, elapsed_seconds: (Number(task.elapsed_seconds) || 0) + elapsed, _syncedAt: syncedNow};
+            });
         }
         historyItems = append ? Array.from(new Map([...historyItems, ...page].map(task=>[task.task_id,task])).values()) : page;
         historyHasMore = data.has_more === true;
         historyNextOffset = Number(data.next_offset) || historyItems.length;
+        const unfilteredTop = !append && !fields.q && !fields.status && !fields.output && !fields.start_date && !fields.end_date && !historyHasMore;
+        if (typeof reconcileActiveTasksFromHistory === 'function') {
+            reconcileActiveTasksFromHistory(page, { authoritative: unfilteredTop });
+        }
         renderRecentTasks(historyItems);
         byId('historyCount').textContent = `已显示 ${historyItems.length} / 共 ${data.total ?? historyItems.length} 条`;
         byId('loadMoreHistoryBtn').hidden = !historyHasMore;
@@ -649,9 +936,12 @@ function renderRecentTasks(tasks) {
     recentTaskRows = new Map();
     deletableRecentTaskIds = tasks.filter(task => DELETABLE_TASK_STATUSES.includes(task.status)).map(task => task.task_id);
     for (const id of selectedRecentTaskIds) if (!deletableRecentTaskIds.includes(id)) selectedRecentTaskIds.delete(id);
-    tasks.forEach((task, index) => {
+    tasks.forEach((rawTask, index) => {
+        const liveTask = typeof activeTasksMap !== 'undefined' ? activeTasksMap.get(rawTask.task_id) : null;
+        const task = liveTask ? {...rawTask, ...liveTask} : rawTask;
         const row = document.createElement('div');
         row.className = 'recent-task-row';
+        if (currentTaskId && task.task_id === currentTaskId) row.classList?.add?.('is-current');
         const select = document.createElement('input');
         select.type = 'checkbox';
         select.dataset.selectTaskId = task.task_id;
@@ -675,16 +965,19 @@ function renderRecentTasks(tasks) {
         title.append(task.title || '未命名任务');
         const meta = document.createElement('span');
         meta.textContent = recentTaskMetaText(task, recentTasksSyncedAt);
-        recentTaskRows.set(task.task_id, { meta, task });
         const status = document.createElement('em');
-        status.className = `recent-task-status ${task.status || ''}`;
-        status.textContent = TASK_STATUS_LABELS[task.status] || task.step_name || '未知';
-
+        if (typeof applyRecentTaskStatus === 'function') {
+            applyRecentTaskStatus(status, task);
+        } else {
+            status.className = `recent-task-status ${task.status || ''}`;
+            status.textContent = TASK_STATUS_LABELS[task.status] || task.step_name || '未知';
+        }
         const text = document.createElement('span');
         text.className = 'recent-task-text';
         text.append(title, meta);
         button.append(text, status);
         row.append(button);
+        let cancelButton = null;
         // 排队中/处理中只能取消（后端拒绝删除运行中的任务）；未开始的任务可以直接删掉，
         // 否则上传后放弃的孤儿任务会永久占着最近任务列表
         if (DELETABLE_TASK_STATUSES.includes(task.status)) {
@@ -698,12 +991,58 @@ function renderRecentTasks(tasks) {
             deleteButton.setAttribute('aria-label', `删除${statusLabel}：${task.title || '未命名任务'}`);
             deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6"/></svg>';
             row.append(deleteButton);
+        } else if (['queued', 'processing', 'awaiting_agent', 'cancelling'].includes(task.status)) {
+            cancelButton = document.createElement('button');
+            cancelButton.type = 'button';
+            const cancelling = task.status === 'cancelling'
+                || (typeof backgroundCancellingIds !== 'undefined' && backgroundCancellingIds.has(task.task_id))
+                || (typeof cancellationTaskId !== 'undefined' && cancellationTaskId === task.task_id);
+            cancelButton.disabled = Boolean(cancelling);
+            cancelButton.className = 'recent-task-cancel';
+            cancelButton.dataset.cancelTaskId = task.task_id;
+            const cancelTitle = typeof formatConcurrencyText === 'function'
+                ? formatConcurrencyText('取消运行中的任务')
+                : '取消运行中的任务';
+            cancelButton.title = cancelTitle;
+            cancelButton.setAttribute('aria-label', `${cancelTitle}：${task.title || '未命名任务'}`);
+            cancelButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 9h6v6H9z"/></svg>';
+            row.append(cancelButton);
         }
+        recentTaskRows.set(task.task_id, { row, meta, status, cancelBtn: cancelButton, task });
         window.AIVideoNoteMotion?.decorateTask(row, status, task, index);
         list.append(row);
     });
     syncRecentSelection();
+    if (typeof syncCurrentRecentTaskHighlight === 'function') syncCurrentRecentTaskHighlight();
+    if (typeof renderActiveTasksBadge === 'function') renderActiveTasksBadge();
     armRecentTasksElapsedTicker();
+    syncRecentTaskListHeight();
+}
+
+function syncRecentTaskListHeight() {
+    const list = byId('recentTaskList');
+    if (!list?.style) return;
+    const rows = Array.from(list.children || []).filter(el => el?.classList?.contains?.('recent-task-row')
+        || String(el?.className || '').split(/\s+/).includes('recent-task-row'));
+    if (!rows.length || typeof rows[0]?.getBoundingClientRect !== 'function') {
+        list.style.removeProperty?.('--recent-task-list-max-height');
+        return;
+    }
+    if (rows.length <= 3) {
+        // Keep 1-3 rows unclipped even under fractional DPI scaling.
+        list.style.setProperty?.('--recent-task-list-max-height', 'none');
+        return;
+    }
+    const borderTop = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
+        ? (parseFloat(window.getComputedStyle(list).borderTopWidth) || 0)
+        : 1;
+    const threeRowsHeight = rows.slice(0, 3).reduce((sum, row) => sum + (row.getBoundingClientRect().height || 0), 0);
+    if (threeRowsHeight > 0) {
+        const nextValue = `${Math.ceil(borderTop + threeRowsHeight)}px`;
+        if (list.style.getPropertyValue?.('--recent-task-list-max-height') !== nextValue) {
+            list.style.setProperty?.('--recent-task-list-max-height', nextValue);
+        }
+    }
 }
 
 function syncRecentSelection() {
@@ -778,24 +1117,36 @@ async function openRecentTask(taskId) {
         });
         const task = await readResponse(response, '读取任务失败');
         if (requestSequence !== recentTaskRequestSequence || viewSequence !== taskViewSequence) return;
+        const liveSelected = typeof isLiveTaskStatus === 'function'
+            ? isLiveTaskStatus(task.status)
+            : ['pending', 'queued', 'processing', 'cancelling', 'awaiting_agent'].includes(task.status);
+        const keepPendingDraft = Boolean(
+            liveSelected
+            && ((typeof sourceDraftDirty !== 'undefined' && sourceDraftDirty) || byId('localFile')?.files?.length)
+        );
         resetTaskView();
         selectedView = taskViewSequence;
         currentTaskId = taskId;
-        sourceTaskId = taskId;
-        sourceFilename = task.source_url ? '' : (task.uploaded_filename || '');
-        byId('localFile').value = '';
-        if (task.generation_mode === "agent") {
-            byId("generationMode").value = "agent";
-            updateGenerationSettings();
-            if (task.note_format) byId("formatSelect").value = task.note_format;
+        if (typeof upsertActiveTaskState === 'function') upsertActiveTaskState(taskId, task);
+        if (typeof syncCurrentRecentTaskHighlight === 'function') syncCurrentRecentTaskHighlight();
+        if (!keepPendingDraft) {
+            sourceTaskId = taskId;
+            sourceFilename = task.source_url ? '' : (task.uploaded_filename || '');
+            byId('localFile').value = '';
+            sourceDraftDirty = false;
+            if (task.generation_mode === "agent") {
+                byId("generationMode").value = "agent";
+                updateGenerationSettings();
+                if (task.note_format) byId("formatSelect").value = task.note_format;
+            }
+            if (task.source_url) {
+                byId('sourceType').value = 'url';
+                byId('videoUrl').value = task.source_url;
+            } else if (task.uploaded_filename) {
+                byId('sourceType').value = /\.(mp3|m4a|wav|flac|aac|ogg|opus|wma)$/i.test(task.uploaded_filename || '') ? 'audio' : 'local';
+            }
+            toggleSourceType();
         }
-        if (task.source_url) {
-            byId('sourceType').value = 'url';
-            byId('videoUrl').value = task.source_url;
-        } else if (task.uploaded_filename) {
-            byId('sourceType').value = /\.(mp3|m4a|wav|flac|aac|ogg|opus|wma)$/i.test(task.uploaded_filename || '') ? 'audio' : 'local';
-        }
-        toggleSourceType();
         updateProgress(task.progress || 0);
         updateStep(task.step || 0);
         setTranscriptTaskView(task.output === 'transcript');
@@ -809,11 +1160,20 @@ async function openRecentTask(taskId) {
             await completeTask(task.result, task.elapsed_seconds, task.download_name);
             if (requestSequence !== recentTaskRequestSequence || taskId !== currentTaskId || selectedView !== taskViewSequence) return;
         } else if (window.syncTranscriptReview?.(taskId, task)) {
+            startElapsedTimer(task.elapsed_seconds);
+            if (typeof window.getPendingTranscriptReviewTaskId === 'function'
+                && window.getPendingTranscriptReviewTaskId() === taskId) {
+                window.openTranscriptReview?.();
+            }
             schedulePoll(taskId);
+            if (typeof scheduleBackgroundTaskSync === 'function') scheduleBackgroundTaskSync();
         } else if (task.status === 'awaiting_agent') {
+            if (task.agent_auto_running) startElapsedTimer(task.elapsed_seconds);
+            else stopElapsedTimer(task.elapsed_seconds);
             showAgentWaiting(task);
             schedulePoll(taskId, 0);
-        } else if (['queued', 'processing', 'cancelling'].includes(task.status)) {
+            if (typeof scheduleBackgroundTaskSync === 'function') scheduleBackgroundTaskSync();
+        } else if (['pending', 'queued', 'processing', 'cancelling'].includes(task.status)) {
             setTaskActive(true);
             startElapsedTimer(task.elapsed_seconds);
             setTaskState('processing', TASK_STATUS_LABELS[task.status]);
@@ -821,9 +1181,11 @@ async function openRecentTask(taskId) {
                 ? '等待当前步骤停止'
                 : '已连接到运行任务';
             schedulePoll(taskId, 0);
+            if (typeof scheduleBackgroundTaskSync === 'function') scheduleBackgroundTaskSync();
         } else {
             showStoppedTask(task);
         }
+        window.syncTranscriptReviewNotice?.();
         byId('progressArea').scrollIntoView({ behavior: window.AIVideoNoteMotion?.scrollBehavior() || 'smooth', block: 'start' });
     } catch (error) {
         if (requestSequence !== recentTaskRequestSequence || selectedView !== taskViewSequence) return;
@@ -843,7 +1205,11 @@ function showStoppedTask(task) {
         : '任务未完成；可以从已有中间文件继续。');
     byId('restartBtn').disabled = false;
     byId('networkState').textContent = '历史任务';
-    setSubmitButton(false, '继续生成');
+    if (typeof atConcurrentTaskLimit === 'function' && atConcurrentTaskLimit()) {
+        resetSubmitLabel();
+    } else {
+        setSubmitButton(false, '继续生成');
+    }
 }
 
 function isLocalSource() { return ['local', 'audio'].includes(byId('sourceType').value); }
@@ -860,13 +1226,14 @@ function toggleSourceType() {
     } else {
         scheduleBiliPagesPreview();
     }
+    updateClearVideoUrlButton();
 }
 
 // ---- 输出类型：生成笔记 / 仅转录字幕 ----
 // 仅转录仍提交到 /api/summarize + output=transcript，而不是 /api/transcribe：
 // 后者是 agent 取原料的路线，任务不进网页端「最近任务」。
 function selectedOutputMode() {
-    return document.querySelector('input[name="outputMode"]:checked')?.value || 'note';
+    return document.querySelector?.('input[name="outputMode"]:checked')?.value || 'note';
 }
 
 function isTranscriptMode() {
@@ -1490,15 +1857,16 @@ function screenshotsEnabled() { if (byId('sourceType').value === 'audio') return
 
 function updateVisionCheckbox() {
     const blocked = isTranscriptMode() || byId('sourceType').value === 'audio' || timedScreenshotEnabled() || selectedScreenshotDensity() === 'none';
+    const queueFull = (typeof atConcurrentTaskLimit === 'function' ? atConcurrentTaskLimit() : isTaskActive) || isSubmitting;
     byId('visionScreenshotSettings').hidden = byId('sourceType').value === 'audio';
     byId('visionCapabilityHint').dataset.state = visionCapability;
     byId('retryVisionCheckBtn').hidden = isAgentMode();
-    byId('retryVisionCheckBtn').disabled = isTaskActive || isSubmitting || blocked || isAgentMode();
-    byId('visionScreenshots').disabled = isTaskActive || isSubmitting || blocked || (!isAgentMode() && visionCapability !== 'supported');
+    byId('retryVisionCheckBtn').disabled = queueFull || blocked || isAgentMode();
+    byId('visionScreenshots').disabled = queueFull || blocked || (!isAgentMode() && visionCapability !== 'supported');
     byId('visionScreenshots').checked = !blocked && (isAgentMode() || visionCapability === 'supported') && visionPreference;
     if (byId('autoCropScreenshotSettings')) byId('autoCropScreenshotSettings').hidden = byId('sourceType').value === 'audio';
     if (byId('autoCropScreenshots')) {
-        byId('autoCropScreenshots').disabled = isTaskActive || isSubmitting || !byId('visionScreenshots').checked || byId('visionScreenshots').disabled;
+        byId('autoCropScreenshots').disabled = queueFull || !byId('visionScreenshots').checked || byId('visionScreenshots').disabled;
         byId('autoCropScreenshots').checked = !blocked && byId('visionScreenshots').checked && cropPreference;
     }
 }
@@ -1565,7 +1933,7 @@ function toggleScreenshotSettings() {
     byId('timedScreenshotSettings').hidden = noPictures;
     scheduleVisionCheck();
     byId('screenshotIntervalField').hidden = !timedScreenshotEnabled();
-    byId('screenshotDensity').disabled = isTaskActive || isSubmitting || timedScreenshotEnabled();
+    byId('screenshotDensity').disabled = (typeof atConcurrentTaskLimit === 'function' ? atConcurrentTaskLimit() : isTaskActive) || isSubmitting || timedScreenshotEnabled();
     byId('screenshotVideoSettings').hidden = !screenshotsEnabled() || isLocalSource();
     updateFileInfo();
 }
@@ -1668,14 +2036,24 @@ function renderSelectedModelPaths() {
     byId('selectedModelPaths').textContent = paths.length
         ? `所选模型文件夹：\n${paths.join('\n')}`
         : (model?.status === 'cached' ? '所选模型使用其他位置的共享缓存，请在原位置管理。' : '当前下载文件夹内没有所选模型。');
-    byId('deleteModelBtn').disabled = modelStorageBusy || isTaskActive || isSubmitting || !paths.length;
+    const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+    byId('deleteModelBtn').disabled = modelStorageBusy || anyActive || isSubmitting || !paths.length;
     ['modelDirectory', 'saveModelDirectoryBtn', 'resetModelDirectoryBtn'].forEach((id) => {
-        byId(id).disabled = modelStorageBusy || isTaskActive || isSubmitting;
+        byId(id).disabled = modelStorageBusy || anyActive || isSubmitting;
     });
 }
 
 async function saveModelDirectory(reset) {
-    if (modelStorageBusy || isTaskActive || isSubmitting) return;
+    const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+    if (modelStorageBusy || anyActive || isSubmitting) {
+        if (anyActive) {
+            const msg = typeof formatConcurrencyText === 'function'
+                ? formatConcurrencyText('请等待当前任务结束后再保存或删除模型')
+                : '请等待当前任务结束后再保存或删除模型';
+            showToast(msg, 'info');
+        }
+        return;
+    }
     modelStorageBusy = true;
     renderSelectedModelPaths();
     try {
@@ -1697,7 +2075,16 @@ async function saveModelDirectory(reset) {
 }
 
 async function deleteSelectedModel() {
-    if (modelStorageBusy || isTaskActive || isSubmitting) return;
+    const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+    if (modelStorageBusy || anyActive || isSubmitting) {
+        if (anyActive) {
+            const msg = typeof formatConcurrencyText === 'function'
+                ? formatConcurrencyText('请等待当前任务结束后再保存或删除模型')
+                : '请等待当前任务结束后再保存或删除模型';
+            showToast(msg, 'info');
+        }
+        return;
+    }
     const model = byId('whisperModel').value;
     const paths = modelStorageState?.models?.find((item) => item.id === model)?.managed_paths || [];
     if (!paths.length || !window.confirm(`确定删除模型「${model}」吗？以下文件夹将被永久删除：\n\n${paths.join('\n')}\n\n再次使用时需要重新下载或导入。`)) return;
@@ -1746,7 +2133,8 @@ function startManualImportPolling(modelId) {
     manualImportPollRemaining = MANUAL_IMPORT_POLL_MAX_TICKS;
     manualImportPollTimer = window.setInterval(async () => {
         manualImportPollRemaining -= 1;
-        if (isTaskActive || manualImportPollRemaining <= 0) {
+        const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+        if (anyActive || manualImportPollRemaining <= 0) {
             stopManualImportPolling();
             return;
         }
@@ -1873,23 +2261,82 @@ function selectedProcessingMode() {
     return value === 'reuse' ? 'reuse' : 'restart';
 }
 
+function findDuplicateRunningTask(request, resumeTaskId, restartSourceId) {
+    if (resumeTaskId || restartSourceId || typeof activeTasksMap === 'undefined') return null;
+    const isActiveSlot = status => (typeof isRunningSlotStatus === 'function'
+        ? isRunningSlotStatus(status)
+        : ['pending', 'queued', 'processing', 'cancelling'].includes(status));
+    if (['local', 'audio'].includes(request.sourceType)) {
+        const filename = request.file?.name || '';
+        const size = request.file?.size;
+        if (!filename) return null;
+        for (const item of activeTasksMap.values()) {
+            if (!isActiveSlot(item?.status)) continue;
+            const itemName = item.filename || item.uploaded_filename || '';
+            if ((itemName && itemName === filename && (size === undefined || item.file_size === undefined || item.file_size === size))
+                || (!itemName && !item.source_url && item.title === filename)) {
+                return item;
+            }
+        }
+        return null;
+    }
+    const norm = raw => (typeof normalizeVideoInput === 'function' ? (normalizeVideoInput(raw) || raw) : raw);
+    const targetUrl = norm(request.videoUrl);
+    if (!targetUrl) return null;
+    const pagesKey = typeof biliPagesCurrent !== 'undefined' && biliPagesCurrent && biliPagesPanelVisible()
+        ? checkedBiliPages().slice().sort((a, b) => a - b).join(',')
+        : '';
+    for (const item of activeTasksMap.values()) {
+        if (!isActiveSlot(item?.status) || !item?.source_url) continue;
+        if (norm(item.source_url) === targetUrl && (item.pages_key || '') === pagesKey) {
+            return item;
+        }
+    }
+    return null;
+}
+
 async function startSummary(options = {}) {
     if (typeof settingsRecoveryBusy !== 'undefined' && settingsRecoveryBusy) return;
-    if (isSubmitting || isTaskActive) {
-        showToast('已有任务正在处理中', 'info');
+    const fmt = (text, ...args) => (typeof formatConcurrencyText === 'function'
+        ? formatConcurrencyText(text, ...args)
+        : (window.AIVideoNoteI18n?.translate?.(text) || text));
+    const slotFull = typeof atConcurrentTaskLimit === 'function' ? atConcurrentTaskLimit() : isTaskActive;
+    if (isSubmitting) {
+        showToast(fmt('正在提交任务，请稍候'), 'info');
+        return;
+    }
+    if (slotFull) {
+        const limit = typeof maxConcurrentTasks !== 'undefined' ? maxConcurrentTasks : 3;
+        showToast(fmt('最多同时处理 {0} 个任务，请等待其中一个完成后再提交', limit), 'info');
         return;
     }
     flushPendingPrefs();   // 本次提交用的设置必须同步落盘，不能留在防抖里
     if (options.outputMode) setOutputMode(options.outputMode);
 
-    const resumeTaskId = options.resumeCurrent ? currentTaskId : null;
+    const runningCurrent = typeof isRunningSlotStatus === 'function'
+        ? isRunningSlotStatus(currentTaskStatus)
+        : ['pending', 'queued', 'processing', 'cancelling'].includes(currentTaskStatus);
+    const canReuseCurrentTask = Boolean(
+        currentTaskId
+        && !isTaskActive
+        && !runningCurrent
+        && ['completed', 'failed', 'cancelled'].includes(currentTaskStatus)
+    );
+    const resumeTaskId = options.resumeCurrent && canReuseCurrentTask ? currentTaskId : null;
     const selectedMode = selectedProcessingMode();
     const forceRestart = Boolean(options.forceRestart || (!resumeTaskId && selectedMode === 'restart'));
-    const restartSourceId = forceRestart && currentTaskId && sourceTaskId === currentTaskId
+    const restartSourceId = forceRestart && canReuseCurrentTask && sourceTaskId === currentTaskId
         && ['local', 'audio'].includes(byId('sourceType').value)
         && !byId('localFile').files[0] ? currentTaskId : null;
     const request = validateAndBuildRequestBase(resumeTaskId || restartSourceId);
     if (!request) return;
+    const duplicateRunning = findDuplicateRunningTask(request, resumeTaskId, restartSourceId);
+    if (duplicateRunning && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+        if (!window.confirm(fmt('当前来源已有任务正在处理中，确定要重复提交吗？'))) {
+            showToast(fmt('已取消重复提交；可清空链接后输入下一个视频'), 'info');
+            return;
+        }
+    }
     // 所选 Whisper 模型未完整缓存时，先确认下载（新用户首次使用）。
     // 以下情况跳过确认：复用转录/续跑（不用 Whisper）、明显走平台字幕的提交
     // （B 站已填凭据、抖音已验证）、已在任意会话确认过该模型下载的用户
@@ -1972,6 +2419,25 @@ async function startSummary(options = {}) {
         const data = await readResponse(response, '提交任务失败');
 
         if (!data.task_id) throw new Error('后端未返回任务 ID');
+        if (typeof sourceDraftDirty !== 'undefined') sourceDraftDirty = false;
+        if (typeof upsertActiveTaskState === 'function') {
+            const pagesKey = typeof biliPagesCurrent !== 'undefined' && biliPagesCurrent && biliPagesPanelVisible()
+                ? checkedBiliPages().slice().sort((a, b) => a - b).join(',')
+                : '';
+            upsertActiveTaskState(data.task_id, {
+                task_id: data.task_id,
+                status: 'pending',
+                progress: 0,
+                title: submissionFilename || videoUrl || data.task_id,
+                source_url: videoUrl || null,
+                filename: request.file?.name || null,
+                file_size: request.file?.size,
+                pages_key: pagesKey,
+                created_at: new Date().toISOString()
+            });
+        }
+        if (typeof updateClearVideoUrlButton === 'function') updateClearVideoUrlButton();
+        if (typeof scheduleBackgroundTaskSync === 'function') scheduleBackgroundTaskSync(300);
         if (!ownsSubmissionView()) {
             loadRecentTasks(true);
             return;
@@ -1980,6 +2446,7 @@ async function startSummary(options = {}) {
         currentTaskId = data.task_id;
         sourceTaskId = data.task_id;
         sourceFilename = submissionFilename;
+        if (typeof syncCurrentRecentTaskHighlight === 'function') syncCurrentRecentTaskHighlight();
         updateFileInfo();
         setTranscriptTaskView(request.transcriptOnly);
         loadRecentTasks(true);
@@ -1988,12 +2455,20 @@ async function startSummary(options = {}) {
         setTaskActive(true);
         startElapsedTimer(0);
         setTaskState('processing', '处理中');
-        setSubmitting(false, '处理中');
+        setSubmitting(false, '开始生成');
+        resetSubmitLabel();
         schedulePoll(currentTaskId, 0);
     } catch (error) {
         if (!ownsSubmissionView()) return;
         setSubmitting(false);
-        if (resumeTaskId && currentMarkdown) {
+        const liveCurrent = typeof isLiveTaskStatus === 'function'
+            ? isLiveTaskStatus(currentTaskStatus)
+            : ['pending', 'queued', 'processing', 'cancelling', 'awaiting_agent'].includes(currentTaskStatus);
+        const preserveViewedTask = Boolean(
+            (resumeTaskId && currentMarkdown)
+            || (!resumeTaskId && submissionTaskId && (isTaskActive || liveCurrent || currentTaskStatus === 'completed'))
+        );
+        if (preserveViewedTask) {
             resetSubmitLabel();
             showToast(error.message || '提交失败，请确认本地后端已启动', 'error');
         } else {
@@ -2001,8 +2476,10 @@ async function startSummary(options = {}) {
         }
     } finally {
         if (isSubmitting) {
-            setSubmitting(false, isTaskActive ? '处理中' : '开始生成');
-            byId('restartBtn').disabled = isTaskActive;
+            setSubmitting(false, '开始生成');
+            if (byId('restartBtn')) {
+                byId('restartBtn').disabled = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+            }
             resetSubmitLabel();
         }
     }
@@ -2585,6 +3062,7 @@ async function repairProjectEnvironment() {
 
 function isAgentMode() { return byId('generationMode')?.value === 'agent'; }
 function showAgentWaiting(task = {}) {
+    if (task?.task_id && typeof upsertActiveTaskState === 'function') upsertActiveTaskState(task.task_id, task);
     setTaskActive(false);
     byId('agentResultPanel').hidden = false;
     if (byId('agentAutomaticActions')) byId('agentAutomaticActions').hidden = Boolean(task.agent_auto_running);
@@ -2600,7 +3078,7 @@ function showAgentWaiting(task = {}) {
     setTaskState('awaiting_agent', task.agent_auto_running ? 'agent 正在自动生成' : '等待 agent 生成');
     if (byId('agentAutoRetryBtn')) byId('agentAutoRetryBtn').disabled = Boolean(task.agent_auto_running);
     byId('networkState').textContent = '材料已准备好';
-    setSubmitButton(false, '提交新任务');
+    if (!(typeof atConcurrentTaskLimit === 'function' && atConcurrentTaskLimit())) setSubmitButton(false, '提交新任务');
 }
 async function copyAgentPacket() {
     const taskId = currentTaskId;
@@ -2725,6 +3203,10 @@ async function logoutBili() {
 window.addEventListener('ui-language-changed', (event) => {
     renderUpdateOffer();
     renderNoteSaveLocation();
+    syncDocumentTitle();
+    renderActiveTasksBadge();
+    if (!isSubmitting) resetSubmitLabel();
+    if (Array.isArray(historyItems) && historyItems.length) renderRecentTasks(historyItems);
     if (!byId('noteLanguage')) return;
     if (event.detail?.userInitiated || !prefs.global.note_language) {
         const language = document.documentElement.lang === 'en' ? 'en' : 'zh-CN';

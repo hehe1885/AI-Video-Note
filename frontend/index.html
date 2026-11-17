@@ -8,9 +8,9 @@
          注意 hash 与 'unsafe-inline' 并存时后者会被忽略，必须整个替换。 -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
     <title>AI Video Note - 本地视频笔记</title>
-    <link rel="icon" href="/favicon.ico?v=ai-video-note-1.0.2">
+    <link rel="icon" href="/favicon.ico?v=ai-video-note-1.0.3">
     <script src="theme-bootstrap.js?v=20261011-2"></script>
-    <link rel="stylesheet" href="style.css?v=20261110-1">
+    <link rel="stylesheet" href="style.css?v=20261117-1">
     <link rel="stylesheet" href="vendor/katex/katex.min.css">
     <script src="vendor/marked-18.0.9.umd.js"></script>
     <script src="vendor/dompurify-3.4.13.min.js"></script>
@@ -22,9 +22,9 @@
 <div class="app-shell">
     <aside id="settingsSidebar" class="sidebar" aria-label="处理配置">
         <div class="brand">
-            <img class="brand-mark" src="/icon.png?v=ai-video-note-1.0.2" alt="" aria-hidden="true" width="40" height="40">
+            <img class="brand-mark" src="/icon.png?v=ai-video-note-1.0.3" alt="" aria-hidden="true" width="40" height="40">
             <div>
-                <h1>AI Video Note <span id="appVersion" class="app-version">v1.0.2</span></h1>
+                <h1>AI Video Note <span id="appVersion" class="app-version">v1.0.3</span></h1>
                 <p>个人视频及音频笔记工具</p>
             </div>
         </div>
@@ -622,10 +622,13 @@
                         <option value="audio">音频转笔记</option>
                     </select>
                 </label>
-                <label id="urlField" class="field source-input-field">
-                    <span class="sr-only">视频链接</span>
-                    <input type="url" id="videoUrl" placeholder="粘贴 B 站、抖音或 YouTube 视频链接，也支持分享文本">
-                </label>
+                <div id="urlField" class="field source-input-field">
+                    <label class="sr-only" for="videoUrl">视频链接</label>
+                    <div class="source-url-wrap">
+                        <input type="url" id="videoUrl" placeholder="粘贴 B 站、抖音或 YouTube 视频链接，也支持分享文本">
+                        <button id="clearVideoUrlBtn" class="source-clear-btn" type="button" title="清空链接并准备新任务" aria-label="清空链接并准备新任务" hidden>✕</button>
+                    </div>
+                </div>
                 <label id="fileField" class="file-picker" hidden>
                     <input type="file" id="localFile" accept="video/*,audio/*">
                     <span class="history-file-button">选择媒体文件</span>
@@ -674,8 +677,9 @@
 
         <section id="recentTasksPanel" class="recent-panel" aria-labelledby="recentTasksTitle" hidden>
             <div class="section-heading recent-heading">
-                <div>
+                <div class="recent-heading-title">
                     <h3 id="recentTasksTitle">历史任务</h3>
+                    <span id="activeTasksBadge" class="active-tasks-badge" role="status" aria-live="polite" hidden></span>
                 </div>
                 <div class="recent-task-actions">
                     <label class="check-field"><input id="selectAllRecentTasks" type="checkbox"><span>全选当前列表</span></label>
@@ -743,7 +747,7 @@
                 </details>
             </div>
             <div id="transcriptReviewNotice" class="output-notice" hidden>
-                <span>字幕有待确认的内容，确认后继续生成。</span>
+                <span id="transcriptReviewNoticeText">字幕有待确认的内容，确认后继续生成。</span>
                 <button id="openTranscriptReviewBtn" type="button" class="button secondary compact-button">检查转写内容</button>
             </div>
             <div id="taskError" class="error-panel" role="alert" hidden>
@@ -835,7 +839,9 @@
 <div id="transcriptReviewModal" class="modal-backdrop transcript-review-modal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="transcriptReviewTitle" aria-describedby="transcriptReviewDescription">
         <h3 id="transcriptReviewTitle">确认转写内容</h3>
+        <p id="transcriptReviewTaskName" class="transcript-review-task-name" data-no-i18n hidden></p>
         <p id="transcriptReviewDescription">以下转写内容可能影响理解。请确认原文，或修改后继续生成笔记。</p>
+        <p id="transcriptReviewQueueHint" class="transcript-review-queue-hint" role="status" aria-live="polite" hidden></p>
         <small class="transcript-review-help">可信度是模型自评，并非实测正确率。高可信建议预填，可逐项撤回；中低可信建议请结合音频核对。</small>
         <div class="transcript-review-tools">
             <button id="transcriptReviewAiBtn" class="button ghost compact-button" type="button" aria-label="让AI校对字幕">✨ AI校对</button>
@@ -936,17 +942,17 @@
 </dialog>
 
 <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-<script src="locales/en.js?v=20261110-1"></script>
+<script src="locales/en.js?v=20261116-3"></script>
 <script src="i18n.js?v=20261019-1"></script>
 <script src="api.js?v=20261013-2"></script>
-<script src="tasks.js?v=20261110-1"></script>
-<script src="settings.js?v=20261105-1"></script>
+<script src="tasks.js?v=20261117-2"></script>
+<script src="settings.js?v=20261117-1"></script>
 <script src="gpu-runtime.js?v=20261016-1"></script>
-<script src="script.js?v=20261110-3"></script>
+<script src="script.js?v=20261117-4"></script>
 <script src="date-picker.js?v=20261019-2"></script>
-<script src="transcript-review.js?v=20261105-1"></script>
+<script src="transcript-review.js?v=20261117-2"></script>
 <script src="note-view.js?v=20261031-2"></script>
-<script src="note-tools.js?v=20261019-1"></script>
+<script src="note-tools.js?v=20261116-1"></script>
 <script src="storage-tools.js?v=20261031-2"></script>
 <script src="motion.js?v=20261019-7"></script>
 </body>

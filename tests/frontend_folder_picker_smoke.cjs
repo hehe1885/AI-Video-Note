@@ -6,7 +6,7 @@ const front=path.join(__dirname,'../frontend');
 const page=fs.readFileSync(path.join(front,'index.html'),'utf8');
 const nodes=new Map([...page.matchAll(/id="([^"]+)"/g)].map(([,id])=>[id,{value:'',disabled:false,hidden:false,textContent:''}]));
 let saved=0,requests=0,next={directory:'D:/Notes',cancelled:false},failure=false;
-const sandbox={console,URL,setTimeout,clearTimeout,document:{getElementById:id=>nodes.get(id),addEventListener(){}},window:{addEventListener(){}},fetch:async(url,opts)=>{
+const sandbox={console,URL,setTimeout,clearTimeout,document:{getElementById:id=>nodes.get(id),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){}},window:{addEventListener(){}},fetch:async(url,opts)=>{
     requests++;assert.equal(url,'/api/note-directory/select');assert.equal(opts.method,'POST');
     assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,true);
     if(failure)throw new Error('offline');
@@ -28,6 +28,15 @@ run('persistGlobals=()=>saved();showToast=()=>{}');
     assert.equal(nodes.get('noteSaveDirectory').value,'D:/Notes');assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,false);
     run('resetNoteSaveDirectory()');assert.equal(saved,2);assert.equal(nodes.get('noteSaveDirectory').value,'');
     assert.equal(nodes.get('resetNoteDirectoryBtn').hidden,true);
-    run('isTaskActive=true');await run('chooseNoteSaveDirectory()');assert.equal(requests,3);
+    run('currentTaskId="t1"; isTaskActive=true; renderNoteSaveLocation();');
+    await run('chooseNoteSaveDirectory()');
+    assert.equal(requests,4,'Directory picker stays available while under the 3-task limit');
+    run(`upsertActiveTaskState('t1',{status:'processing'});upsertActiveTaskState('t2',{status:'processing'});upsertActiveTaskState('t3',{status:'processing'});`);
+    assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,true,'Directory picker disables at the 3-task limit');
+    await run('chooseNoteSaveDirectory()');
+    assert.equal(requests,4,'Directory picker refuses requests when 3 tasks are active');
+    run('resetNoteSaveDirectory()');assert.equal(saved,2);
+    run(`removeActiveTaskState('t3');`);
+    assert.equal(nodes.get('chooseNoteDirectoryBtn').disabled,false,'Directory picker re-enables below the 3-task limit');
     console.log('Native folder picker UI: selection, cancel, failure, reset and task guard passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

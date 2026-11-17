@@ -43,8 +43,8 @@ const freshView = () => run(`isSubmitting=false; isTaskActive=false; currentTask
     freshView();
     let historyVisible=false;
     nodes.get('fileField').classList.toggle=(name,visible)=>{if(name==='has-history-file')historyVisible=visible;};
-    run("sourceFilename='local-recording.mp4'; updateFileInfo();");
-    assert.equal(nodes.get('localFileName').textContent,'local-recording.mp4');
+    run("sourceFilename='VID20261106150657.mp4'; updateFileInfo();");
+    assert.equal(nodes.get('localFileName').textContent,'VID20261106150657.mp4');
     assert.equal(historyVisible,true);
     sandbox.fetch=async(url,options)=>{
         assert.equal(url,'/api/summarize');
@@ -58,7 +58,7 @@ const freshView = () => run(`isSubmitting=false; isTaskActive=false; currentTask
     assert.equal(sent[0].generation_action,'regenerate');
     assert.equal(sent[0].resume_task_id,null);
     assert.equal(toasts.length,0);
-    assert.equal(nodes.get('localFileName').textContent,'local-recording.mp4');
+    assert.equal(nodes.get('localFileName').textContent,'VID20261106150657.mp4');
     assert.equal(historyVisible,true);
     assert.equal(nodes.get('localFile').files.length,0);
     freshView();

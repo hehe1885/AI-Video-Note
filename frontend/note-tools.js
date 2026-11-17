@@ -54,7 +54,8 @@
     }
     function applyTemplate(template, silent = false) {
         if (!template) return;
-        if (isTaskActive || isSubmitting) return showToast('请等待当前任务结束后再应用模板', 'info');
+        const anyActive = typeof hasAnyActiveTask === 'function' ? hasAnyActiveTask() : isTaskActive;
+        if (anyActive || isSubmitting) return showToast('请等待当前任务结束后再应用模板', 'info');
         flushPendingPrefs();
         const previousProvider = prefs.provider;
         const previousBase = activeRecord()?.base_url || '';

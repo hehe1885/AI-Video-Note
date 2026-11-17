@@ -288,3 +288,38 @@ async def test_cancel_manual_agent_subtitle_wait_does_not_hang(source):
     await asyncio.sleep(0)
     await main.cancel_task(task_id)
     with pytest.raises(asyncio.CancelledError): await asyncio.wait_for(job, 1)
+
+
+@pytest.mark.asyncio
+async def test_auto_agent_run_cli_accepts_processing_status_and_cancel_awaiting_agent_unblocks_delete(source, monkeypatch):
+    import time
+    task_id, directory, segments = source
+    main.tasks[task_id]['status'] = 'processing'
+    agent_queue.write_job(task_id, {'settings': {'agent_provider': 'custom', 'agent_command': ['python', 'worker.py']}, 'title': '课程', 'info': {}, 'screenshots': []})
+
+    class FakeProc:
+        returncode = 0
+        def poll(self): return 0
+
+    def fake_comm(_proc, _input, _report):
+        time.sleep(0.05)
+        (directory / '_agent_run' / 'plan.json').write_text('{"issues":[]}', encoding='utf-8')
+        return b'', b''
+
+    monkeypatch.setattr(agent_auto.subprocess, 'Popen', lambda *a, **kw: FakeProc())
+    monkeypatch.setattr(agent_auto, 'communicate_with_report', fake_comm)
+    output = await agent_auto._run_cli(task_id, 'prompt', schema=review.SCHEMA)
+    assert output == '{"issues":[]}'
+
+    # Cancelling an awaiting_agent task with a queued auto worker must cancel the worker and allow deletion.
+    main.tasks[task_id]['status'] = 'awaiting_agent'
+    main.tasks[task_id]['_agent_auto_running'] = True
+    main.tasks[task_id]['transcript_review'] = {'status': 'pending', 'revision': 'r1', 'count': 1}
+    blocker = asyncio.Event()
+    agent_auto.workers[task_id] = asyncio.create_task(blocker.wait())
+    await asyncio.sleep(0)
+    await main.cancel_task(task_id)
+    await asyncio.sleep(0)
+    assert main.tasks[task_id]['_agent_auto_running'] is False
+    assert main.tasks[task_id]['transcript_review'] is None
+    assert (await main.delete_task(task_id))['deleted'] is True
