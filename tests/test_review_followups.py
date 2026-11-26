@@ -88,15 +88,20 @@ def test_malformed_runtime_fields_cannot_prevent_startup(app_data, runtime):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('suffix,selection,expected', [
-    ('?p=1', [2], [2]), ('?p=2', [3, 1], [1, 3]),
-    ('?p=2', None, [2]), ('', None, [1, 2, 3]),
-    ('?p=2', [], [2]), ('?p=2', [99], [2]),
+@pytest.mark.parametrize('suffix,selection,expected,output,mode', [
+    ('?p=1', [2], [2], 'transcript', 'api'), ('?p=2', [3, 1], [1, 3], 'transcript', 'api'),
+    ('?p=2', None, [2], 'transcript', 'api'), ('', None, [1, 2, 3], 'transcript', 'api'),
+    ('?p=2', [], [2], 'transcript', 'api'), ('?p=2', [99], [2], 'transcript', 'api'),
+    ('?p=1', [2], [2], 'note', 'api'), ('?p=2', [3, 1], [1, 3], 'note', 'api'),
+    ('?p=1', [2], [2], 'note', 'agent'), ('?p=2', [3, 1], [1, 3], 'note', 'agent'),
 ])
-async def test_forced_asr_downloads_exact_selected_parts(app_data, monkeypatch, suffix, selection, expected):
+async def test_forced_asr_downloads_exact_selected_parts(app_data, monkeypatch, suffix, selection, expected, output, mode):
+    from urllib.parse import parse_qs, urlsplit
+
     root, _ = app_data
     pages = tuple(BiliPage(page=i, cid=100 + i, part=f'Part {i}', duration=10) for i in (1, 2, 3))
     urls = []
+    captures = []
 
     async def info(*args, **kwargs):
         return {'title': 'Selected parts', 'source': 'bilibili', 'duration': 30}
@@ -112,27 +117,59 @@ async def test_forced_asr_downloads_exact_selected_parts(app_data, monkeypatch, 
         return segments
     async def no_subtitle_request(*args, **kwargs):
         pytest.fail('Forced ASR must not request subtitles')
+
+    async def preview(url, *args, **kwargs):
+        part = int(parse_qs(urlsplit(url).query)['p'][0])
+        return root / f'preview-{part}.mp4'
+
+    async def capture(path, task_id, times, should_abort):
+        captures.append((path.stem, times))
+        frames = directory / 'frames'
+        frames.mkdir(exist_ok=True)
+        results = {time: frames / f'{path.stem}-{time}.jpg' for time in times}
+        for result in results.values():
+            result.write_bytes(b'image fixture')
+        return results
+
+    class Summarizer:
+        def __init__(self, **kwargs):
+            pass
+
+        def describe_effort(self, *args):
+            return 'standard'
+
+        async def generate_summary(self, *args, **kwargs):
+            return '# Test note'
+
     monkeypatch.setattr(main.video_processor, 'get_video_info', info)
     monkeypatch.setattr(main.video_processor, 'bilibili_video_pages', inventory)
     monkeypatch.setattr(main.video_processor, 'download_audio', audio)
     monkeypatch.setattr(main.video_processor, 'fetch_bilibili_subtitles', no_subtitle_request)
+    monkeypatch.setattr(main.video_processor, 'download_preview_video', preview)
+    monkeypatch.setattr(main.video_processor, 'extract_frames_at', capture)
     monkeypatch.setattr(main, 'run_transcription', transcribe)
+    monkeypatch.setattr(main, 'LLMSummarizer', Summarizer)
     monkeypatch.setattr(main, 'archive_note', lambda *args, **kwargs: None)
     monkeypatch.setattr(transcript_review, 'review_transcript_output', review)
-    directory = record('asr', status='processing', output='transcript')
+    directory = record('asr', status='processing', output=output)
     main.tasks['asr'] = main.new_task(task_id='asr')
     request = main.SummarizeRequest(video_url='https://www.bilibili.com/video/BV1miht6gERa' + suffix,
-        prefer_subtitles=False, bilibili_pages=selection, output='transcript', llm_config={})
+        prefer_subtitles=False, bilibili_pages=selection, output=output, generation_mode=mode, agent_execution='manual',
+        timed_screenshots=output == 'note', screenshot_interval=5, llm_config={'model_type': 'deepseek', 'api_key': 'fixture'})
     main.write_task_manifest('asr', request, None, 'web')
     await main.process_video_task('asr', request)
-    assert main.tasks['asr']['status'] == 'completed', main.tasks['asr'].get('error')
-    from urllib.parse import parse_qs, urlsplit
+    assert main.tasks['asr']['status'] == ('awaiting_agent' if mode == 'agent' else 'completed'), main.tasks['asr'].get('error')
     assert [int(parse_qs(urlsplit(url).query)['p'][0]) for url in urls] == expected
     manifest = main.read_task_manifest('asr')
     assert [page['page'] for page in manifest['bili_pages']] == expected
     transcript = main.load_transcript_result(directory)
     assert [segment.start for segment in transcript['segments']] == [10 * index for index in range(len(expected))]
     assert all(f'audio_p{page}' in segment.text for page, segment in zip(expected, transcript['segments']))
+    if output == 'note':
+        assert captures == [(f'preview-{page}', [0., 5.]) for page in expected]
+        if mode == 'agent':
+            from backend.agent_queue import read_job
+            assert [shot['time'] for shot in read_job('asr')['screenshots']] == list(range(0, 10 * len(expected), 5))
 
 
 @pytest.mark.asyncio

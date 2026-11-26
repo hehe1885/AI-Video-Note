@@ -52,21 +52,22 @@ def exported_files(workspace, task_id, manifest, result):
         token = re.search(r'-([0-9a-f]{12}|[0-9a-f]{32})\.md$', note.name)
         if token:
             paths.add(note)
-            try:
-                content = note.read_text(encoding='utf-8')
-            except OSError:
-                content = ''
-            for link in re.findall(r'!\[[^\]]*\]\(([^)]+)\)', content):
-                path = (note.parent / unquote(link)).resolve()
+            # New exports track the actual files. Older exports only have Markdown links.
+            recorded = result.get('obsidian_files')
+            if isinstance(recorded, list):
+                images = [Path(item) for item in recorded]
+            else:
+                try:
+                    raw = note.read_bytes()
+                    encoding = 'utf-16' if raw.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig'
+                    content = raw.decode(encoding)
+                except (OSError, UnicodeError):
+                    content = ''
+                images = [note.parent / unquote(link) for link in re.findall(r'!\[[^\]]*\]\(([^)]+)\)', content)]
+            for image in images:
+                path = image.resolve()
                 if re.fullmatch(r'video-' + token[1] + r'-\d+\.(?:jpg|jpeg|png|webp)', path.name, re.I):
                     paths.add(path)
-    # New tasks also retain the exact successful export paths, so edited Markdown does not orphan images.
-    for item in result.get('obsidian_files') or []:
-        path = Path(item).resolve()
-        note = result.get('obsidian_path')
-        token = re.search(r'-([0-9a-f]{12}|[0-9a-f]{32})\.md$', Path(note).name) if note else None
-        if token and re.fullmatch(r'video-' + token[1] + r'-\d+\.(?:jpg|jpeg|png|webp)', path.name, re.I):
-            paths.add(path)
     return paths
 
 

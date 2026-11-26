@@ -1,14 +1,14 @@
-# 1.0.3
+# 1.0.4
 
-- 支持同一页面最多同时提交并处理 3 个笔记任务（`MAX_CONCURRENT_TASKS`，范围 1～3），可在「历史任务」中切换查看任一任务进度并随时取消。
-- 新增本地语音转写槽位串行控制（`MAX_CONCURRENT_ASR`，默认 1），多任务并发时避免本地 GPU 显存与内存争抢；多任务需核对字幕时按提交顺序排队弹窗。
-- 修复任务取消、异常状态同步、Agent 自动托管竞态及字幕校对弹窗清理等稳定性问题。
-- 优化「历史任务」列表默认高度为 3 条展示，超出部分下滑浏览。
+- 修复 Windows 安装版在 CPU 或 GPU 转写长音频后，因字幕结果过大而一直停在「语音转写」的问题。
+- 转写结果读取失败时，任务会显示错误并回收转写进程。
+- 取消转写后会限时回收无响应的子进程，释放后续任务的转写槽位。
+- 修复模型断点续传、B 站分 P 截图错配，以及 Obsidian 笔记更改编码后无法删除任务的问题。
 
-- Support up to 3 concurrent note tasks per page (`MAX_CONCURRENT_TASKS`, range 1–3), switch between tasks in History to inspect live progress, and cancel running tasks inline.
-- Serialize local speech transcription workers via `MAX_CONCURRENT_ASR` (default 1) to avoid GPU/RAM contention, and queue pending subtitle reviews strictly in submission order.
-- Fix stability issues around task cancellation, state polling, Agent auto-processing races, and subtitle review modal cleanup.
-- Adjust the Recent History list height to show 3 items by default with smooth scrolling for more.
+- Fix a hang in the Windows installer build when CPU or GPU transcription returns a large transcript.
+- Show an error and clean up the transcription process if the result cannot be read.
+- Reap unresponsive transcription workers after cancellation so queued tasks can start.
+- Fix model download resumption, screenshot routing for Bilibili parts, and task deletion after an Obsidian note changes encoding.
 
 ## 中文
 

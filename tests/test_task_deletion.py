@@ -86,6 +86,27 @@ async def test_bulk_reports_running_and_missing_without_hiding_success(tmp_path,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('tracked', [False, True])
+async def test_utf16_obsidian_note_does_not_block_task_deletion(tmp_path, monkeypatch, tracked):
+    setup(tmp_path, monkeypatch)
+    token = 'a' * 12
+    note = tmp_path / f'note-{token}.md'
+    image = tmp_path / f'video-{token}-1.jpg'
+    note.write_text(f'![shot]({image.name})', encoding='utf-16')
+    image.write_bytes(b'image')
+    result = {'obsidian_path': str(note)}
+    if tracked:
+        result['obsidian_files'] = [str(image)]
+    task('edited', result=result)
+    task('unrelated')
+
+    assert await main.delete_tasks(main.DeleteTasksRequest(task_ids=['unrelated', 'edited'])) == {
+        'deleted': ['unrelated', 'edited'], 'failed': [],
+    }
+    assert not note.exists() and not image.exists()
+
+
+@pytest.mark.asyncio
 async def test_active_resume_protects_source_then_stopped_input_is_preserved(tmp_path, monkeypatch):
     setup(tmp_path, monkeypatch)
     source_dir = task('source')

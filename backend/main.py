@@ -168,7 +168,7 @@ NOTE_IMAGE_REF_RE = re.compile(
     rf"(!\[[^\]]*\]\()(?:\./)?(?:{FRAMES_DIR_NAME}|images)/([^)]+)\)"
 )
 
-app = FastAPI(title="AI Video Note API", version="1.0.3")
+app = FastAPI(title="AI Video Note API", version="1.0.4")
 detailed_logs.startup(WORKSPACE_DIR, app.version)
 
 

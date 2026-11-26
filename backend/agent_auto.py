@@ -325,8 +325,7 @@ async def review_agent_screenshots(task_id, token, data, segments):
             raise RuntimeError('正在提取截图，请稍后重试')
         task['_agent_capture'] = True
         try:
-            captured = await runtime.video_processor.extract_frames_at(Path(data['video_path']), task_id, times,
-                lambda: bool(task.get('_cancel_requested')))
+            captured = await queue.extract_job_frames(runtime, task_id, times, data)
             frames.update(captured)
             if hasattr(runtime.video_processor, 'take_gpu_notes'):
                 task['logs'].extend(runtime.video_processor.take_gpu_notes(task_id))

@@ -28,6 +28,19 @@ print(json.dumps({"event": "done", "result": {
 }}), flush=True)
 """
 
+LONG_RESULT_SCRIPT = """
+import json, sys
+from backend.asr_process import _emit, use_utf8_pipes
+
+use_utf8_pipes()
+job = json.loads(sys.stdin.readline())
+_emit({"event": "progress", "done": 1, "total": 2})
+_emit({"event": "done", "result": {
+    "segments": [{"start": 0, "end": 2, "text": "字幕🙂\\n" * 12000}],
+    "device": "gpu" if job["use_gpu"] else "cpu",
+}})
+"""
+
 # 用负数退出：Windows 上这会原样变成 0xC0000005，正是 native 访问违例的退出码
 CRASH_SCRIPT = "import os; os._exit(-1073741819)"
 
@@ -76,6 +89,45 @@ async def test_run_in_child_streams_progress_and_decodes_segments(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_gpu", [False, True], ids=["cpu", "gpu"])
+async def test_worker_returns_subtitles_larger_than_the_pipe_line_limit(
+    tmp_path, monkeypatch, use_gpu
+) -> None:
+    monkeypatch.setattr(asr_process, "child_command", fake_child(LONG_RESULT_SCRIPT))
+    seen = []
+
+    result = await asyncio.wait_for(
+        asr_process.run_in_child(
+            tmp_path / "a.mp3", "turbo", use_gpu, None,
+            progress_callback=lambda done, total: seen.append((done, total)),
+        ),
+        timeout=10,
+    )
+
+    assert seen == [(1.0, 2.0)]
+    assert result["device"] == ("gpu" if use_gpu else "cpu")
+    assert result["segments"] == [TranscriptSegment(0.0, 2.0, "字幕🙂\n" * 12000)]
+
+
+@pytest.mark.asyncio
+async def test_stdout_read_error_reaps_the_worker(tmp_path, monkeypatch) -> None:
+    async def broken_stdout(stdout):
+        yield '{"event":"progress","done":1,"total":2}'
+        raise OSError("stdout pipe failed")
+
+    monkeypatch.setattr(asr_process, "child_command", fake_child(CANCEL_SCRIPT))
+    monkeypatch.setattr(asr_process, "_read_event_lines", broken_stdout)
+
+    with pytest.raises(asr_process.TranscriptionWorkerDied, match="stdout pipe failed"):
+        await asyncio.wait_for(
+            asr_process.run_in_child(tmp_path / "a.mp3", "small", False, None),
+            timeout=10,
+        )
+
+    assert not asr_process._active_workers
+
+
+@pytest.mark.asyncio
 async def test_native_crash_of_worker_becomes_a_failing_task(tmp_path, monkeypatch) -> None:
     """工人访问违例时只能让任务失败：整条命令是 `python -c` 起的假工人，崩的从来不是主程序。"""
     monkeypatch.setattr(asr_process, "child_command", fake_child(CRASH_SCRIPT))
@@ -112,6 +164,28 @@ async def test_cancel_reaches_the_worker(tmp_path, monkeypatch) -> None:
         await asr_process.run_in_child(
             tmp_path / "a.mp3", "small", False, "标题", cancel_event
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_that_ignores_cancel_is_reaped(tmp_path, monkeypatch) -> None:
+    script = """
+import json, sys, time
+sys.stdin.readline()
+print(json.dumps({'event': 'progress', 'done': 1}), flush=True)
+assert json.loads(sys.stdin.readline())['cmd'] == 'cancel'
+time.sleep(30)
+"""
+    monkeypatch.setattr(asr_process, "child_command", fake_child(script))
+    monkeypatch.setattr(asr_process, "CANCEL_GRACE_SECONDS", 0.2)
+    from backend.whisper_asr import TranscriptionCancelledError
+
+    cancel_event = threading.Event()
+    with pytest.raises(TranscriptionCancelledError):
+        await asyncio.wait_for(asr_process.run_in_child(
+            tmp_path / "a.mp3", "base", False, None, cancel_event,
+            progress_callback=lambda _done, _total: cancel_event.set(),
+        ), timeout=5)
+    assert not asr_process._active_workers
 
 
 def test_exit_code_is_printed_as_ntstatus() -> None:

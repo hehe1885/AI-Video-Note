@@ -14,8 +14,9 @@ import asyncio
 import json
 import sys
 import threading
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 from .transcript import TranscriptSegment
 from . import asr_diagnostics, detailed_logs
@@ -90,6 +91,20 @@ def format_exit_code(code: int | None) -> str:
     return str(code)
 
 
+async def _read_event_lines(stdout: asyncio.StreamReader) -> AsyncIterator[str]:
+    # The complete transcript is one JSON record and can exceed readline's limit.
+    pending = bytearray()
+    while chunk := await stdout.read(64 * 1024):
+        *lines, tail = chunk.split(b"\n")
+        for line in lines:
+            pending.extend(line)
+            yield pending.decode("utf-8", "replace")
+            pending.clear()
+        pending.extend(tail)
+    if pending:
+        yield pending.decode("utf-8", "replace")
+
+
 async def run_in_child(
     media_path: Path,
     model_name: str,
@@ -124,19 +139,17 @@ async def run_in_child(
     _active_workers.add(process)
     assert process.stdin and process.stdout
     writer = process.stdin
-    writer.write((json.dumps(job, ensure_ascii=False) + "\n").encode("utf-8"))
-    await writer.drain()
+    stdout = process.stdout
 
-    events: asyncio.Queue[str] = asyncio.Queue()
+    events: asyncio.Queue[str | None] = asyncio.Queue()
 
     async def pump() -> None:
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            await events.put(line.decode("utf-8", "replace"))
-        # 管道关了就说明工人没了（崩溃、被杀或自己退出）：用哨兵把等待的一方叫醒
-        await events.put("")
+        try:
+            async for line in _read_event_lines(stdout):
+                events.put_nowait(line)
+        finally:
+            # Wake the consumer on EOF and on read errors.
+            events.put_nowait(None)
 
     pump_task = asyncio.create_task(pump())
     cancel_task = asyncio.create_task(
@@ -147,9 +160,15 @@ async def run_in_child(
     failure: str | None = None
     cancelled = False
     try:
+        # A worker that exits immediately can close stdin before reading the job.
+        # Keep reading stdout so an error event or its exit code can be reported.
+        with suppress(BrokenPipeError, ConnectionResetError):
+            writer.write((json.dumps(job, ensure_ascii=False) + "\n").encode("utf-8"))
+            await writer.drain()
         while True:
             line = await events.get()
-            if not line:
+            if line is None:
+                await pump_task
                 break
             event = _parse_event(line)
             if event is None:
@@ -173,21 +192,30 @@ async def run_in_child(
             elif kind == "error":
                 failure = str(event.get("message") or "转写工人未给出原因")
                 break
+        writer.close()
+        await _reap(process, cancelled)
+    except OSError as exc:
+        failure = f"与转写工人通信失败：{exc}"
     finally:
         cancel_task.cancel()
-        await asyncio.gather(cancel_task, return_exceptions=True)
+        writer.close()
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+        try:
+            await asyncio.gather(process.wait(), pump_task, cancel_task, return_exceptions=True)
+        finally:
+            _active_workers.discard(process)
 
-    exit_code = await _reap(process, cancelled)
+    exit_code = process.returncode
+    cancelled = cancelled or (cancel_event is not None and cancel_event.is_set())
     detailed_logs.event('asr.worker_exited', worker_pid=process.pid, exit_code=exit_code, cancelled=cancelled)
-    _active_workers.discard(process)
-    pump_task.cancel()
-    await asyncio.gather(pump_task, return_exceptions=True)
 
     if cancelled:
         from .whisper_asr import TranscriptionCancelledError
 
         raise TranscriptionCancelledError("转写已取消")
-    if payload is None:
+    if failure is not None or payload is None:
         reason = failure or f"退出码 {format_exit_code(exit_code)}"
         raise TranscriptionWorkerDied(
             f"语音转写进程异常退出（{reason}）；本次任务已停止，程序本身仍在运行，"
@@ -204,10 +232,14 @@ async def _send_cancel_when_asked(
     while process.returncode is None:
         if cancel_event.is_set():
             try:
-                writer.write(b'{"cmd": "cancel"}\n')
-                await writer.drain()
-            except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
-                return
+                async with asyncio.timeout(CANCEL_GRACE_SECONDS):
+                    with suppress(OSError, ValueError):
+                        writer.write(b'{"cmd": "cancel"}\n')
+                        await writer.drain()
+                    await process.wait()
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    process.kill()
             return
         await asyncio.sleep(0.5)
 

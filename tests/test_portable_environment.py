@@ -13,7 +13,8 @@ from backend.model_downloads import ModelDownloads
 from backend.environment import EnvironmentRepair, node_path
 
 
-def test_download_pause_and_resume_keeps_partial_and_reports_progress(tmp_path):
+@pytest.mark.parametrize('pause_after_last_chunk', [False, True])
+def test_download_pause_and_resume_keeps_partial_and_reports_progress(tmp_path, pause_after_last_chunk):
     payload = b'video-model' * 50000
     ranges = []
     cancel = threading.Event()
@@ -22,6 +23,11 @@ def test_download_pause_and_resume_keeps_partial_and_reports_progress(tmp_path):
         def do_GET(self):
             start = int(self.headers.get('Range', 'bytes=0-').split('=')[1].split('-')[0])
             ranges.append(start)
+            if start >= len(payload):
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{len(payload)}')
+                self.end_headers()
+                return
             self.send_response(206 if start else 200)
             self.send_header('Content-Length', str(len(payload)-start))
             if start:
@@ -39,9 +45,10 @@ def test_download_pause_and_resume_keeps_partial_and_reports_progress(tmp_path):
     thread.start()
     target = tmp_path/'model.bin'
     progress = []
+    pause_at = len(payload) if pause_after_last_chunk else 100001
     def callback(path, received, total):
         progress.append((received,total))
-        if received > 100000:
+        if received >= pause_at:
             cancel.set()
     url = f'http://127.0.0.1:{server.server_port}/model'
     try:
@@ -49,18 +56,54 @@ def test_download_pause_and_resume_keeps_partial_and_reports_progress(tmp_path):
             download_to_file(url,target,{},cancel)
         assert not target.exists()
         partial = target.with_suffix('.bin.part').stat().st_size
-        assert 0 < partial < len(payload)
+        if pause_after_last_chunk:
+            assert partial == len(payload)
+        else:
+            assert 0 < partial < len(payload)
         cancel.clear()
         resumed = []
         with report_downloads(lambda p,r,t:resumed.append((r,t))):
             assert download_to_file(url,target,{},cancel)[0]
         assert target.read_bytes() == payload
-        assert ranges[-1] == partial
-        assert resumed[0] == (partial,len(payload))
+        assert ranges == ([0, partial, 0] if pause_after_last_chunk else [0, partial])
+        assert resumed[0] == (0 if pause_after_last_chunk else partial, len(payload))
         assert resumed[-1] == (len(payload),len(payload))
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize('server_stops_early', [False, True])
+def test_download_checks_resource_length_in_content_range(tmp_path, monkeypatch, server_stops_early):
+    import io
+    import urllib.error
+
+    target = tmp_path / 'model.bin'
+    part = target.with_suffix('.bin.part')
+    part.write_bytes(b'abc')
+    requests = []
+
+    def open_range(request, **kwargs):
+        requested = request.get_header('Range')
+        requests.append(requested)
+        if requested == 'bytes=6-' and server_stops_early:
+            raise urllib.error.HTTPError(request.full_url, 404, 'Missing', {}, None)
+        start, body = (3, b'def') if requested == 'bytes=3-' else (6, b'ghi')
+        response = io.BytesIO(body)
+        response.status = 206
+        response.headers = {'Content-Range': f'bytes {start}-{start+2}/9', 'Content-Length': '3'}
+        return response
+
+    monkeypatch.setattr('backend.download.urllib.request.urlopen', open_range)
+    ok, _ = download_to_file('https://example.invalid/model.bin', target, {}, attempts=1)
+    assert requests == ['bytes=3-', 'bytes=6-']
+    assert ok is not server_stops_early
+    if server_stops_early:
+        assert part.read_bytes() == b'abcdef'
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'abcdefghi'
+        assert not part.exists()
 
 
 def test_model_job_pause_retry_and_error(tmp_path):

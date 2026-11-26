@@ -2,6 +2,7 @@
 from __future__ import annotations
 import inspect
 from .video_processor import BiliSubtitleOutcome, select_bilibili_pages
+from .screenshot_media import extract_screenshot_frames, prepare_screenshot_sources, screenshot_sources
 from .task_exports import archive_outputs
 
 
@@ -503,43 +504,35 @@ async def _process_video_task(runtime, task_id: str, request) -> None:
                     )
                 runtime.raise_if_cancel_requested(task)
                 if screenshot_points:
-                    video_path = runtime.Path(uploaded_path) if is_local else await runtime.asyncio.to_thread(
-                        runtime.reuse_preview_video, request, task_id, source_url or ""
-                    )
-                    if video_path is not None and not is_local:
-                        task["logs"].append(f"已复用下载的视频，无需重新下载：{video_path}")
-                    if video_path is None:
+                    sources = screenshot_sources(uploaded_path if is_local else None, source_url, info.get("bili_pages"))
+
+                    async def capture_frames(times):
                         try:
-                            video_path = await runtime.video_processor.download_preview_video(
-                                source_url or "", task_id, cookie, should_abort, fallback_notes,
-                                max_height=request.video_resolution,
-                                **({'video_encoding':request.video_encoding} if request.video_encoding == 'size' else {}),
-                                download_directory=request.video_download_directory,
-                                title=title,
-                            )
+                            await prepare_screenshot_sources(runtime, request, task_id, sources, cookie,
+                                                             should_abort, fallback_notes, title, times)
                         except Exception:
                             task["screenshot_warning"] = "视频下载失败，本次笔记没有配图。文字笔记仍会生成；可稍后重试，或导入本地视频后生成。"
                             runtime.persist_task_runtime(task_id)
                             raise
-                    note_api_fallback()
-                    if not is_local:
-                        task["logs"].append(f"截图视频已保存：{video_path}（最高 {request.video_resolution}p）")
-                        task["video_path"] = str(video_path)
-                    screenshot_frames = await runtime.video_processor.extract_frames_at(
-                        video_path, task_id, runtime.candidate_times(screenshot_points, info.get("duration")) if request.vision_screenshots and not request.timed_screenshots else [point.time for point in screenshot_points], should_abort
-                    )
-                    if hasattr(runtime.video_processor,'take_gpu_notes'):
-                        task['logs'].extend(runtime.video_processor.take_gpu_notes(task_id))
+                        note_api_fallback()
+                        if not is_local and len(sources) == 1:
+                            task["video_path"] = sources[0]["path"]
+                        captured = await extract_screenshot_frames(runtime.video_processor, task_id, times, should_abort, sources)
+                        if hasattr(runtime.video_processor, 'take_gpu_notes'):
+                            task['logs'].extend(runtime.video_processor.take_gpu_notes(task_id))
+                        return captured
+
+                    times = (runtime.candidate_times(screenshot_points, info.get("duration"))
+                             if request.vision_screenshots and not request.timed_screenshots
+                             else [point.time for point in screenshot_points])
+                    screenshot_frames = await capture_frames(times)
                     runtime.raise_if_cancel_requested(task)
                     if request.vision_screenshots and not request.timed_screenshots:
                         try:
                             original_frames = dict(screenshot_frames)
                             async def capture_retry(times):
-                                captured = await runtime.video_processor.extract_frames_at(
-                                    video_path, task_id, times, should_abort)
+                                captured = await capture_frames(times)
                                 original_frames.update(captured)
-                                if hasattr(runtime.video_processor, 'take_gpu_notes'):
-                                    task['logs'].extend(runtime.video_processor.take_gpu_notes(task_id))
                                 return captured
                             from .vision_screenshots import save_review_trace
                             review_audit = []

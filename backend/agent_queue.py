@@ -67,7 +67,7 @@ def lease(task_id, token, *, allow_finishing=False):
     return data
 
 
-def reuse_agent_screenshots(task_id, settings, source_url):
+def reuse_agent_screenshots(task_id, settings, source_url, sources=None):
     """Copy matching resume-task frames into the new task so exports remain self-contained."""
     m = app()
     source_id = m.tasks[task_id].get("resume_task_id")
@@ -90,6 +90,16 @@ def reuse_agent_screenshots(task_id, settings, source_url):
         return []
     if source_url and old.get("source_url") and m.normalize_source_url(source_url) != m.normalize_source_url(old["source_url"]):
         return []
+    def matches_timeline(job):
+        if sources is None:
+            return True
+        previous_sources = job.get('screenshot_sources')
+        if not sources or not isinstance(previous_sources, list) or len(previous_sources) != len(sources):
+            return False
+        return all(isinstance(previous, dict) and all(current[key] == previous.get(key) for key in ('url', 'start', 'end'))
+                   for current, previous in zip(sources, previous_sources))
+    if not matches_timeline(old):
+        return []
     visited = {task_id, source_id}
     while not old.get("screenshots"):
         parent_id = m.read_task_manifest(source_id).get("reused_task_id")
@@ -103,6 +113,8 @@ def reuse_agent_screenshots(task_id, settings, source_url):
         if screenshot_options(settings) != screenshot_options(previous.get("settings", {})):
             return []
         if source_url and previous.get("source_url") and m.normalize_source_url(source_url) != m.normalize_source_url(previous["source_url"]):
+            return []
+        if not matches_timeline(previous):
             return []
         source_id, old = parent_id, previous
     source_frames = m.task_directory(source_id) / m.FRAMES_DIR_NAME
@@ -125,33 +137,42 @@ def reuse_agent_screenshots(task_id, settings, source_url):
 
 
 async def prepare(task_id, request, title, info, segments, video_path=None, source_url=None, cookie=None):
+    from .screenshot_media import prepare_screenshot_sources, screenshot_sources
+
     m = app()
     task = m.tasks[task_id]
     settings = request.model_dump(exclude={"llm_config", "bilibili_cookie", "douyin_cookie"})
     audio = Path(task.get("uploaded_filename") or "").suffix.lower() in {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus", ".wma"}
     wants_images = request.output != 'transcript' and not audio and (request.timed_screenshots or (request.screenshot_density or ("medium" if request.include_screenshots else "none")) != "none")
+    sources = []
+    bili_timeline = [] if info.get('bili_pages') else None
     if wants_images:
         m.set_progress(task, 5, "准备配图视频", 45, "字幕已就绪，正在准备配图视频；网络无响应时会超时重试")
         try:
-            if not video_path:
-                video_path = await asyncio.to_thread(m.reuse_preview_video, request, task_id, source_url or "")
-            if not video_path:
-                video_path = await m.video_processor.download_preview_video(source_url or "", task_id, cookie, lambda: bool(task.get("_cancel_requested")), task['logs'], max_height=request.video_resolution, download_directory=request.video_download_directory, title=title, **({'video_encoding':request.video_encoding} if request.video_encoding == 'size' else {}))
-            task["video_path"] = str(video_path)
+            sources = screenshot_sources(video_path, source_url, info.get('bili_pages'))
+            if bili_timeline is not None:
+                bili_timeline = sources
+            await prepare_screenshot_sources(m, request, task_id, sources, cookie,
+                                             lambda: bool(task.get("_cancel_requested")), task['logs'], title)
+            video_path = sources[0]['path'] if len(sources) == 1 else None
+            task["video_path"] = video_path
         except asyncio.CancelledError:
             raise
         except Exception:
             video_path = None
+            sources = []
             task["screenshot_warning"] = "视频下载失败，agent 将生成文字笔记；可稍后使用本地视频重试。"
     m.raise_if_cancel_requested(task)
     data = {"settings": settings, "title": title, "source_url": source_url, "info": {key: info.get(key) for key in ("duration", "owner", "source", "published_at")}, "video_path": str(video_path) if video_path else None, "screenshots": [], "audio_only": audio}
+    if sources:
+        data['screenshot_sources'] = sources
     if wants_images:
-        data["screenshots"] = reuse_agent_screenshots(task_id, settings, source_url)
+        data["screenshots"] = reuse_agent_screenshots(task_id, settings, source_url, bili_timeline)
         if data["screenshots"]:
             task["logs"].append(f"已复用 {len(data['screenshots'])} 张已有截图，新任务导出时使用独立副本")
     data['requires_transcript_review'] = True
     write_job(task_id, data)
-    if wants_images and video_path and request.timed_screenshots and not data["screenshots"]:
+    if sources and request.timed_screenshots and not data["screenshots"]:
         times = [point.time for point in m.interval_screenshots(segments, info.get("duration"), request.screenshot_interval)]
         await capture(task_id, times, check_pending=False)
     subtitle_only = request.output == 'transcript'
@@ -224,7 +245,7 @@ async def get_packet(task_id: str, offset: int = 0, limit: int = 100):
         from .note_context import source_context
         prompt += "\n" + source_context(data['title'], segments, settings.get('note_language', 'zh-CN'))
     offset = max(0, offset); limit = max(1, min(limit, 500))
-    return {"task_id": task_id, "title": data["title"], "settings": settings, "prompt": prompt, "segments": [{**segment, "segment_index": offset + index} for index, segment in enumerate(segments[offset:offset + limit])], "transcript_review": app().tasks[task_id].get("transcript_review"), "total_segments": len(segments), "next_offset": offset + limit if offset + limit < len(segments) else None, "screenshots": data.get("screenshots", []), "candidate_groups":data.get("candidate_groups", []), "can_capture": bool(data.get("video_path")), "warning": app().tasks[task_id].get("screenshot_warning"), "web_path": "/?task=" + task_id}
+    return {"task_id": task_id, "title": data["title"], "settings": settings, "prompt": prompt, "segments": [{**segment, "segment_index": offset + index} for index, segment in enumerate(segments[offset:offset + limit])], "transcript_review": app().tasks[task_id].get("transcript_review"), "total_segments": len(segments), "next_offset": offset + limit if offset + limit < len(segments) else None, "screenshots": data.get("screenshots", []), "candidate_groups":data.get("candidate_groups", []), "can_capture": bool(data.get("video_path") or data.get("screenshot_sources")), "warning": app().tasks[task_id].get("screenshot_warning"), "web_path": "/?task=" + task_id}
 
 
 class Capture(BaseModel):
@@ -279,13 +300,22 @@ async def report_transcript_issues(task_id: str, body: TranscriptIssues):
     return {'waiting_for_user': False, 'web_path': '/?task=' + task_id}
 
 
+async def extract_job_frames(m, task_id, times, data):
+    from .screenshot_media import extract_screenshot_frames, screenshot_sources
+
+    sources = data.get('screenshot_sources') or screenshot_sources(data.get('video_path'), None, None)
+    return await extract_screenshot_frames(
+        m.video_processor, task_id, times, lambda: bool(m.tasks[task_id].get('_cancel_requested')), sources,
+    )
+
+
 async def capture(task_id, times, check_pending=True):
     m = app(); data = read_job(task_id)
     if check_pending: pending(task_id)
     settings = data["settings"]
     if not settings.get("timed_screenshots") and (settings.get("screenshot_density") or ("medium" if settings.get("include_screenshots") else "none")) == "none":
         raise HTTPException(409, "用户选择了不添加图片")
-    if not data.get("video_path"):
+    if not (data.get("video_path") or data.get("screenshot_sources")):
         raise HTTPException(409, "此任务没有可截图的视频")
     duration = float(data.get("info", {}).get("duration") or 0)
     if any(not math.isfinite(t) or t < 0 or (duration and t >= duration) for t in times):
@@ -301,7 +331,7 @@ async def capture(task_id, times, check_pending=True):
         times = sorted({stamp for group in candidate_groups for stamp in group["candidates"]})
     task["_agent_capture"] = True
     try:
-        frames = await m.video_processor.extract_frames_at(Path(data["video_path"]), task_id, sorted(set(times)), lambda: bool(task.get("_cancel_requested")))
+        frames = await extract_job_frames(m, task_id, sorted(set(times)), data)
         if hasattr(m.video_processor,'take_gpu_notes'):
             task['logs'].extend(m.video_processor.take_gpu_notes(task_id))
     finally:
